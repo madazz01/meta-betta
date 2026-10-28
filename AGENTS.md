@@ -20,6 +20,17 @@ It has the same shape as other agent chat extensions:
 
 We copy the *shape and feel* of good chat extensions. **Never copy code from any other product** (including Claude Code or Cline). Write everything fresh.
 
+## Look and feel (match this design; write the code fresh)
+
+A calm chat page, not a terminal:
+- **Header:** session title (short, auto-named), buttons: history (`/resume`), new chat, 💾 Save my day.
+- **Messages:** user and assistant bubbles with small timestamps; pasted images as a thumbnail chip with name + size.
+- **Thinking:** one quiet grey line, "Thought for 12s", click to expand. Never a wall of text.
+- **Plan:** when Muse makes a plan/checklist, show it as a small card at the top of the reply with ticks as steps finish.
+- **Tool rows:** one line each, e.g. "📄 Wrote extension.ts (+16 lines)", "▶ Ran npm test ✓". Code/diffs/output folded away; click to expand into a small monospace box. Never dump code into the chat by default.
+- **Input box (bottom, rounded):** attach (+), text area, mic (voice), model chip (e.g. "Muse Spark 1.3"), approval-mode chip, send/stop button. Status line under it ("Muse is working… · Saved ✓ 2:15pm").
+- Follow the VS Code theme (light/dark) with `--vscode-*` CSS variables. Plenty of spacing, readable font size.
+
 ## Who it's for
 
 Developers (e.g. people in the Meta hackathon). They already know VS Code, files and chat, so don't over-explain the basics; what's new to them is working with an agent that remembers. Every word the user sees is still **plain English**: no stack traces, no "coerced numeric strings". Say what it does for them, briefly.
