@@ -3,6 +3,8 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { parseSendMessage } from "./lib/chat.js";
 import { parseFileLink } from "./lib/links.js";
+import { buildTranscript, cleanTranscript } from "./lib/session.js";
+import { shortReason } from "./lib/startup.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import { type ApprovalCardEvent, MuseHost, type MuseHostEvent } from "./muse/museHost.js";
 
@@ -21,6 +23,8 @@ type TranscriptEvent =
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" };
 
 const HISTORY_LIMIT = 500;
+const SESSION_ID_KEY = "metaBetta.sessionId";
+const TRANSCRIPT_KEY = "metaBetta.transcript";
 
 /**
  * Owns the Muse session and the chat history. Every attached surface shows
@@ -32,9 +36,14 @@ export class ChatController {
   private running = false;
   private lastStatus = "";
   private host?: MuseHost;
+  private prepared = false;
+  private preparing: Promise<void> | undefined;
   private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
 
-  public constructor(private readonly extensionUri: vscode.Uri) {}
+  public constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly storage: vscode.Memento,
+  ) {}
 
   public bind(sink: ChatSink): void {
     this.sinks.add(sink);
@@ -43,6 +52,7 @@ export class ChatController {
     }
     sink.post({ type: "turn", state: this.running ? "started" : "done" });
     sink.post({ type: "status", text: this.lastStatus });
+    void this.prepare();
   }
 
   public unbind(sink: ChatSink): void {
@@ -66,12 +76,9 @@ export class ChatController {
       });
       return;
     }
-    this.host ??= new MuseHost({
-      museBin: findMuseBin(vscode.workspace.getConfiguration("metaBetta").get<string>("museBin", "")),
-      version: readVersion(this.extensionUri),
-      emit: (event) => this.onHostEvent(event),
-      askApproval: (card) => this.askApproval(card),
-    });
+    // History first, so yesterday's messages stay above a fresh reply.
+    await this.prepare();
+    this.host ??= this.createHost();
     this.recordAndBroadcast({ type: "user", text });
     await this.host.send(text, folder.uri.fsPath);
   }
@@ -83,6 +90,41 @@ export class ChatController {
   public approve(id: string, choiceId: string): void {
     this.approvalResolvers.get(id)?.(choiceId);
     this.approvalResolvers.delete(id);
+  }
+
+  public async newChat(): Promise<void> {
+    const answer = await vscode.window.showWarningMessage(
+      "Start a new chat? The old one stays saved by Muse.",
+      "New chat",
+      "Cancel",
+    );
+    if (answer !== "New chat") {
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return;
+    }
+    this.host ??= this.createHost();
+    try {
+      await this.host.newSession(folder.uri.fsPath);
+    } catch (error) {
+      this.broadcast({
+        type: "notice",
+        kind: "error",
+        text: `Something went wrong starting a new chat: ${shortReason(error)}.`,
+      });
+      this.broadcast({ type: "turn", state: "done" });
+      this.broadcast({ type: "status", text: "Ready" });
+      return;
+    }
+    this.history = [];
+    this.storeSet(TRANSCRIPT_KEY, undefined);
+    this.running = false;
+    this.lastStatus = "";
+    this.broadcast({ type: "clear" });
+    this.broadcast({ type: "turn", state: "done" });
+    this.broadcast({ type: "status", text: "Ready" });
   }
 
   public async openLink(url: string): Promise<void> {
@@ -116,10 +158,78 @@ export class ChatController {
     }
   }
 
+  private prepare(): Promise<void> {
+    if (this.prepared) {
+      return Promise.resolve();
+    }
+    this.preparing ??= this.doPrepare().finally(() => {
+      this.preparing = undefined;
+    });
+    return this.preparing;
+  }
+
+  private async doPrepare(): Promise<void> {
+    try {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      const savedId = this.storage.get<string>(SESSION_ID_KEY);
+      if (!folder || !savedId?.trim()) {
+        return;
+      }
+      this.host ??= this.createHost();
+      let shown = 0;
+      try {
+        shown = await this.host.prepare(folder.uri.fsPath);
+      } catch {
+        // Leave the panel usable; send() surfaces startup problems properly.
+        shown = 0;
+      }
+      if (shown === 0) {
+        const stored = cleanTranscript(this.storage.get<unknown>(TRANSCRIPT_KEY));
+        stored.forEach((entry, index) => {
+          this.recordAndBroadcast(
+            entry.role === "user"
+              ? { type: "user", text: entry.text }
+              : { type: "assistant", id: `stored-${index}`, text: entry.text },
+          );
+        });
+      }
+    } finally {
+      this.prepared = true;
+    }
+  }
+
+  private createHost(): MuseHost {
+    return new MuseHost({
+      museBin: findMuseBin(vscode.workspace.getConfiguration("metaBetta").get<string>("museBin", "")),
+      version: readVersion(this.extensionUri),
+      emit: (event) => this.onHostEvent(event),
+      askApproval: (card) => this.askApproval(card),
+      sessionStore: {
+        loadId: () => this.storage.get<string>(SESSION_ID_KEY),
+        saveId: (id) => this.storeSet(SESSION_ID_KEY, id),
+        clear: () => {
+          this.storeSet(SESSION_ID_KEY, undefined);
+          this.storeSet(TRANSCRIPT_KEY, undefined);
+        },
+      },
+    });
+  }
+
+  private storeSet(key: string, value: unknown): void {
+    void this.storage.update(key, value).then(undefined, () => undefined);
+  }
+
+  private persistTranscript(): void {
+    this.storeSet(TRANSCRIPT_KEY, buildTranscript(this.history));
+  }
+
   private onHostEvent(event: MuseHostEvent): void {
     if (event.type === "turn") {
       this.running = event.state === "started";
       this.broadcast(event);
+      if (!this.running) {
+        this.persistTranscript();
+      }
       return;
     }
     if (event.type === "status") {
@@ -160,6 +270,9 @@ export class ChatController {
       this.history.splice(0, this.history.length - HISTORY_LIMIT);
     }
     this.broadcast(event);
+    if (event.type === "user") {
+      this.persistTranscript();
+    }
   }
 
   private broadcast(message: unknown): void {
@@ -176,6 +289,10 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
   }
   if (message.type === "stop") {
     controller.stop();
+    return;
+  }
+  if (message.type === "newChat") {
+    void controller.newChat();
     return;
   }
   if (message.type === "approve" && typeof message.id === "string" && typeof message.choiceId === "string") {

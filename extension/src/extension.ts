@@ -7,7 +7,7 @@ let controller: ChatController | undefined;
 let viewProvider: ChatViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  controller = new ChatController(context.extensionUri);
+  controller = new ChatController(context.extensionUri, context.workspaceState);
   viewProvider = new ChatViewProvider(context.extensionUri, controller, () => {
     if (controller) {
       openChatPanel(context.extensionUri, controller);

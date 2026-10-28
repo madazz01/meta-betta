@@ -21,6 +21,22 @@ body {
   gap: 8px;
 }
 
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+#chat-title {
+  font-weight: 600;
+}
+
+#new-chat {
+  margin-left: auto;
+}
+
 #messages {
   flex: 1;
   overflow-y: auto;

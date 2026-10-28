@@ -49,6 +49,42 @@ export function reasoningText(
   return joined || text || "";
 }
 
+export interface HistoryItemView {
+  kind: string;
+  itemId: string;
+  text?: string;
+  displayText?: string;
+  summary?: readonly string[];
+}
+
+export type HistoryEvent =
+  | { type: "user"; text: string }
+  | { type: "assistant"; id: string; text: string }
+  | { type: "thinking"; id: string; text: string };
+
+/**
+ * One transcript event for a resumed history item: user and agent messages
+ * plus collapsed thinking. Anything else (tools, internals) is skipped.
+ */
+export function historyEvent(item: HistoryItemView): HistoryEvent | undefined {
+  switch (item.kind) {
+    case "userMessage": {
+      const text = item.text ?? item.displayText ?? "";
+      return text ? { type: "user", text } : undefined;
+    }
+    case "agentMessage": {
+      const text = item.text ?? "";
+      return text ? { type: "assistant", id: item.itemId, text } : undefined;
+    }
+    case "reasoning": {
+      const text = reasoningText(item.summary, item.text);
+      return text ? { type: "thinking", id: item.itemId, text } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 function toolLabel(item: ToolItemView, past: boolean): string {
   const label = item.displayLabel;
   if (!label) {

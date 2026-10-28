@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { reasoningText, toolRowText } from "../lib/items.js";
+import { historyEvent, reasoningText, toolRowText } from "../lib/items.js";
 
 describe("toolRowText", () => {
   it("renders a running tool call with its active label", () => {
@@ -108,6 +108,32 @@ describe("toolRowText", () => {
       "Working… — helper running",
     );
     assert.equal(toolRowText({ kind: "weird", status: "inProgress" }).text, "Working…");
+  });
+});
+
+describe("historyEvent", () => {
+  it("keeps user and agent messages", () => {
+    assert.deepEqual(
+      historyEvent({ kind: "userMessage", itemId: "u1", text: "hi" }),
+      { type: "user", text: "hi" },
+    );
+    assert.deepEqual(
+      historyEvent({ kind: "agentMessage", itemId: "a1", text: "hello" }),
+      { type: "assistant", id: "a1", text: "hello" },
+    );
+  });
+
+  it("keeps thinking with its item id", () => {
+    assert.deepEqual(
+      historyEvent({ kind: "reasoning", itemId: "r1", summary: ["hmm"] }),
+      { type: "thinking", id: "r1", text: "hmm" },
+    );
+  });
+
+  it("skips tools, internals, and empty messages", () => {
+    assert.equal(historyEvent({ kind: "toolCall", itemId: "t1", text: "x" }), undefined);
+    assert.equal(historyEvent({ kind: "reminderChild", itemId: "r2" }), undefined);
+    assert.equal(historyEvent({ kind: "agentMessage", itemId: "a2" }), undefined);
   });
 });
 

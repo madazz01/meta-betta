@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { TurnOutcome } from "@muse-code/sdk";
+import type { FoldedItem, TurnOutcome } from "@muse-code/sdk";
 import {
   MuseHost,
   type HostClient,
@@ -76,6 +76,51 @@ describe("MuseHost", () => {
     assert.equal(stopped().length, 1);
     assert.ok(fake.events.some((event) => event.type === "turn" && event.state === "done"));
   });
+
+  it("resumes the saved session and shows its history", async () => {
+    const fake = fakeStoredSession({
+      savedId: "saved-1",
+      history: [
+        { kind: "userMessage", itemId: "u1", revision: 1, status: "completed", text: "first question" },
+        { kind: "agentMessage", itemId: "a1", revision: 2, status: "completed", text: "first answer" },
+        { kind: "reasoning", itemId: "r1", revision: 1, status: "completed", summary: ["hmm"] },
+        { kind: "toolCall", itemId: "t1", revision: 1, status: "completed", tool: "read" },
+      ],
+    });
+    const shown = await fake.host.prepare(process.cwd());
+    assert.equal(shown, 3);
+    assert.deepEqual(
+      fake.events.filter((event) => event.type === "user" || event.type === "assistant"),
+      [
+        { type: "user", text: "first question" },
+        { type: "assistant", id: "a1", text: "first answer" },
+      ],
+    );
+    assert.ok(fake.events.some((event) => event.type === "thinking" && event.text === "hmm"));
+    assert.deepEqual(fake.savedIds, ["saved-1"]);
+    assert.equal(fake.startedFresh, false);
+
+    const sending = fake.host.send("follow-up", process.cwd());
+    await fake.submitted;
+    fake.finishTurn(terminalOutcome("completed"));
+    await sending;
+    await fake.host.dispose();
+  });
+
+  it("starts fresh with one line when resume fails", async () => {
+    const fake = fakeStoredSession({ savedId: "gone", resumeThrows: true });
+    const shown = await fake.host.prepare(process.cwd());
+    assert.equal(shown, 0);
+    assert.ok(
+      fake.events.some(
+        (event) => event.type === "notice" && event.text === "Couldn't reopen yesterday's chat, so I've started a fresh one.",
+      ),
+    );
+    assert.equal(fake.cleared, true);
+    assert.deepEqual(fake.savedIds, ["fresh-1"]);
+    assert.equal(fake.startedFresh, true);
+    await fake.host.dispose();
+  });
 });
 
 type CompletedParams = Extract<TurnOutcome, { kind: "completed" }>["params"];
@@ -127,9 +172,13 @@ function fakeRunningTurn(
     },
     onApproval: () => undefined,
     onApprovalError: () => undefined,
+    fold: { items: { list: () => [] } },
   };
   const client: HostClient = {
     startSession: async () => session,
+    resumeSession: async () => {
+      throw new Error("no saved session in this test");
+    },
     close: async () => undefined,
   };
   const connection: HostConnection = {
@@ -151,4 +200,98 @@ function fakeRunningTurn(
     finishTurn,
   };
   return fake;
+}
+
+interface StoredFake extends FakeHost {
+  savedIds: string[];
+  cleared: boolean;
+  startedFresh: boolean;
+}
+
+function fakeStoredSession(options: {
+  savedId: string | undefined;
+  history?: FoldedItem[];
+  resumeThrows?: boolean;
+}): StoredFake {
+  const events: MuseHostEvent[] = [];
+  const commands: FakeHost["commands"] = [];
+  const savedIds: string[] = [];
+  let cleared = false;
+  let startedFresh = false;
+  let markSubmitted!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    markSubmitted = resolve;
+  });
+  let finishTurn!: (outcome: TurnOutcome) => void;
+  const completed = new Promise<TurnOutcome>((resolve) => {
+    finishTurn = resolve;
+  });
+  const turn: HostTurn = {
+    turnId: "turn-1",
+    items: () => settledAfter(completed),
+    deltas: () => settledAfter(completed),
+    completed,
+  };
+  const makeSession = (sessionId: string, history: FoldedItem[]): HostSession => ({
+    sessionId,
+    sendUserTurn: async () => {
+      markSubmitted();
+      return turn;
+    },
+    onApproval: () => undefined,
+    onApprovalError: () => undefined,
+    fold: { items: { list: () => history } },
+  });
+  const resumed = makeSession(options.savedId ?? "saved-1", options.history ?? []);
+  const fresh = makeSession("fresh-1", []);
+  const client: HostClient = {
+    startSession: async () => {
+      startedFresh = true;
+      return fresh;
+    },
+    resumeSession: async () => {
+      if (options.resumeThrows) {
+        throw new Error("session gone");
+      }
+      return resumed;
+    },
+    close: async () => undefined,
+  };
+  const connection: HostConnection = {
+    command: async (method, params) => {
+      commands.push({ method, params });
+      return {};
+    },
+  };
+  return {
+    host: new MuseHost({
+      museBin: "unused",
+      version: "0.0.1",
+      emit: (event) => {
+        events.push(event);
+      },
+      askApproval: () => Promise.resolve(undefined),
+      createHost: async () => ({ client, connection }),
+      sessionStore: {
+        loadId: () => options.savedId,
+        saveId: (id) => {
+          savedIds.push(id);
+        },
+        clear: () => {
+          cleared = true;
+        },
+      },
+    }),
+    events,
+    commands,
+    submitted,
+    finishTurn,
+    savedIds,
+    get cleared() {
+      return cleared;
+    },
+    get startedFresh() {
+      return startedFresh;
+    },
+  };
 }

@@ -15,7 +15,8 @@ import type {
 } from "@muse-code/sdk";
 import type { ApprovalRequestParams, ItemDeltaParams } from "@muse-code/sdk/dist/src/msp.js";
 import { approvalCard, safestChoiceId } from "../lib/approvals.js";
-import { reasoningText, toolRowText } from "../lib/items.js";
+import { historyEvent, reasoningText, toolRowText } from "../lib/items.js";
+import { decideSession } from "../lib/session.js";
 import { classifySpawnError, parseSandboxReady, shortReason } from "../lib/startup.js";
 
 export interface ApprovalChoiceCard {
@@ -32,6 +33,7 @@ export interface ApprovalCardEvent {
 }
 
 export type MuseHostEvent =
+  | { type: "user"; text: string }
   | { type: "assistant"; id: string; text: string }
   | { type: "thinking"; id: string; text: string }
   | { type: "tool"; id: string; text: string; done: boolean }
@@ -52,11 +54,18 @@ export interface MuseHostOptions {
   askApproval: (card: ApprovalCardEvent) => Promise<string | undefined>;
   /** Test seam: build the client instead of spawning `muse serve`. */
   createHost?: () => Promise<{ client: HostClient; connection: HostConnection }>;
+  /** Saved session id storage; without it every start is a fresh session. */
+  sessionStore?: SessionStore;
 }
 
 /** The slice of the SDK client MuseHost drives (real or fake). */
 export interface HostClient {
   startSession(options: { workspaceRoot: string }): Promise<HostSession>;
+  resumeSession(options: {
+    sessionId: string;
+    onApproval: ApprovalHandler;
+    onApprovalError: ApprovalFailureHandler;
+  }): Promise<HostSession>;
   close(): Promise<void>;
 }
 
@@ -66,6 +75,14 @@ export interface HostSession {
   sendUserTurn(options: { input: { type: "text"; text: string }[] }): Promise<HostTurn>;
   onApproval(handler: ApprovalHandler): void;
   onApprovalError(handler: ApprovalFailureHandler): void;
+  readonly fold: { readonly items: { list(): readonly FoldedItem[] } };
+}
+
+/** Saved session id storage, owned by the view layer. */
+export interface SessionStore {
+  loadId(): string | undefined;
+  saveId(sessionId: string): void;
+  clear(): void;
 }
 
 /** The slice of the SDK turn MuseHost drives (real or fake). */
@@ -108,7 +125,8 @@ export class MuseHost {
   private session: HostSession | undefined;
   private connection: HostConnection | undefined;
   private currentTurnId: string | undefined;
-  private starting: Promise<void> | undefined;
+  private historyLoadedFor: string | undefined;
+  private starting: Promise<HostSession> | undefined;
   /** Bumped by every send and every stop; older turns' late events are dropped. */
   private turnGen = 0;
   private approvalWaiters = new Set<(choiceId: string | undefined) => void>();
@@ -119,14 +137,14 @@ export class MuseHost {
     this.turnGen += 1;
     const state = newTurnState(this.turnGen);
     this.emit({ type: "turn", state: "started" });
+    let session: HostSession;
     try {
-      await this.ensureStarted(workspaceRoot);
+      session = await this.ensureStarted(workspaceRoot);
     } catch (error) {
       await this.startupFailed(error, state.gen);
       return;
     }
-    const session = this.session;
-    if (!session || !this.live(state)) {
+    if (!this.live(state)) {
       return;
     }
     this.emit({ type: "status", text: "Muse is thinking…" });
@@ -213,6 +231,46 @@ export class MuseHost {
     this.emit({ type: "status", text: "Ready" });
   }
 
+  /**
+   * Start a new session on the same client, abandoning the old one (it stays
+   * saved by Muse). Interrupts a running turn first; late events from it are
+   * dropped. Emits nothing; the caller resets the panel.
+   */
+  public async newSession(workspaceRoot: string): Promise<void> {
+    if (this.currentTurnId) {
+      try {
+        await this.interruptTurn(this.currentTurnId);
+      } catch {
+        // Abandoned either way; the generation bump drops late events.
+      }
+    }
+    this.turnGen += 1;
+    this.currentTurnId = undefined;
+    for (const finish of this.approvalWaiters) {
+      finish(undefined);
+    }
+    this.approvalWaiters.clear();
+    const client = await this.ensureClient();
+    const session = await client.startSession({ workspaceRoot });
+    this.session = session;
+    session.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
+    session.onApprovalError(() => this.approvalErrorNotice());
+    this.options.sessionStore?.saveId(session.sessionId);
+  }
+
+  /**
+   * Open the session and emit its earlier messages (once per session).
+   * Returns how many history events were emitted.
+   */
+  public async prepare(workspaceRoot: string): Promise<number> {
+    const session = await this.ensureStarted(workspaceRoot);
+    if (this.historyLoadedFor === session.sessionId) {
+      return 0;
+    }
+    this.historyLoadedFor = session.sessionId;
+    return this.loadHistory(session);
+  }
+
   private emit(event: MuseHostEvent): void {
     this.options.emit(event);
   }
@@ -221,43 +279,73 @@ export class MuseHost {
     return state.gen === this.turnGen;
   }
 
-  private ensureStarted(workspaceRoot: string): Promise<void> {
+  private ensureStarted(workspaceRoot: string): Promise<HostSession> {
     if (this.session) {
-      return Promise.resolve();
+      return Promise.resolve(this.session);
     }
-    this.starting ??= this.start(workspaceRoot).finally(() => {
+    this.starting ??= this.openSession(workspaceRoot).finally(() => {
       this.starting = undefined;
     });
     return this.starting;
   }
 
-  private async start(workspaceRoot: string): Promise<void> {
-    this.emit({ type: "status", text: "Starting Muse…" });
-    let session: HostSession;
-    if (this.options.createHost) {
-      const built = await this.options.createHost();
-      session = await built.client.startSession({ workspaceRoot });
-      this.session = session;
-      this.client = built.client;
-      this.connection = built.connection;
-    } else {
-      session = await this.spawn(workspaceRoot);
+  private async openSession(workspaceRoot: string): Promise<HostSession> {
+    const client = await this.ensureClient();
+    const savedId = this.options.sessionStore?.loadId()?.trim() || undefined;
+    let session: HostSession | undefined;
+    if (savedId) {
+      try {
+        session = await client.resumeSession({
+          sessionId: savedId,
+          onApproval: async (request) => ({ choiceId: await this.decideApproval(request) }),
+          onApprovalError: () => this.approvalErrorNotice(),
+        });
+      } catch {
+        session = undefined;
+      }
     }
-    session.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
-    session.onApprovalError(() => {
+    const action = decideSession(savedId, session !== undefined);
+    if (action === "resume-saved" && session) {
+      this.session = session;
+      this.options.sessionStore?.saveId(session.sessionId);
+      return session;
+    }
+    let fresh: HostSession;
+    try {
+      fresh = await client.startSession({ workspaceRoot });
+    } catch (error) {
+      this.markDead();
+      throw error;
+    }
+    this.session = fresh;
+    fresh.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
+    fresh.onApprovalError(() => this.approvalErrorNotice());
+    if (action === "restart-after-failed-resume") {
+      this.options.sessionStore?.clear();
       this.emit({
         type: "notice",
-        kind: "error",
-        text: "That permission request didn't go through. Try stopping the turn and asking again.",
+        kind: "info",
+        text: "Couldn't reopen yesterday's chat, so I've started a fresh one.",
       });
-    });
+    }
+    this.options.sessionStore?.saveId(fresh.sessionId);
+    return fresh;
   }
 
-  /**
-   * The same steps MuseClient.spawn() takes, done manually so this host holds
-   * the connection (needed to interrupt a running turn). See spike/stop.mjs.
-   */
-  private async spawn(workspaceRoot: string): Promise<HostSession> {
+  private async ensureClient(): Promise<HostClient> {
+    if (this.client) {
+      return this.client;
+    }
+    this.emit({ type: "status", text: "Starting Muse…" });
+    if (this.options.createHost) {
+      const built = await this.options.createHost();
+      this.client = built.client;
+      this.connection = built.connection;
+      return this.client;
+    }
+    // The same steps MuseClient.spawn() takes, done manually so this host
+    // holds the connection (needed to interrupt a running turn).
+    // See spike/stop.mjs.
     const { MuseClient, spawnMspConnection, readSessionDurability } = await import("@muse-code/sdk");
     const handshake = spawnMspConnection({ command: this.options.museBin, args: ["serve"] });
     let client: MuseClient | undefined;
@@ -269,11 +357,9 @@ export class MuseHost {
         durability: readSessionDurability(spawned.initializeResult),
         host: spawned,
       });
-      const session = await client.startSession({ workspaceRoot });
-      this.session = session;
       this.client = client;
       this.connection = spawned.connection;
-      return session;
+      return client;
     } catch (error) {
       if (client) {
         await client.close().catch(() => undefined);
@@ -295,6 +381,32 @@ export class MuseHost {
       }
       throw error;
     }
+  }
+
+  private loadHistory(session: HostSession): number {
+    let count = 0;
+    for (const item of session.fold.items.list()) {
+      const event = historyEvent({
+        kind: String(item.kind),
+        itemId: item.itemId,
+        text: item.text,
+        displayText: item.displayText,
+        summary: item.summary,
+      });
+      if (event) {
+        this.emit(event);
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  private approvalErrorNotice(): void {
+    this.emit({
+      type: "notice",
+      kind: "error",
+      text: "That permission request didn't go through. Try stopping the turn and asking again.",
+    });
   }
 
   private decideApproval(request: ApprovalRequestParams): Promise<string> {

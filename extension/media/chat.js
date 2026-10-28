@@ -9,6 +9,7 @@
   const form = document.getElementById("composer");
   const input = document.getElementById("input");
   const sendButton = document.getElementById("send");
+  const newChatButton = document.getElementById("new-chat");
 
   let running = false;
   const assistantEls = new Map();
@@ -181,6 +182,21 @@
     }
   }
 
+  function clearChat() {
+    messagesEl.replaceChildren();
+    assistantEls.clear();
+    thinkingEls.clear();
+    toolEls.clear();
+    approvalEls.clear();
+    emptyStateEl.hidden = false;
+    setStatus("");
+    setRunning(false);
+  }
+
+  newChatButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "newChat" });
+  });
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (running) {
@@ -262,6 +278,9 @@
         if (message.state === "started" || message.state === "done") {
           setRunning(message.state === "started");
         }
+        break;
+      case "clear":
+        clearChat();
         break;
       default:
         break;
