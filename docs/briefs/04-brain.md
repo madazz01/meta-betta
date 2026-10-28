@@ -7,19 +7,22 @@ Every workspace gets a `brain/` folder that Muse reads at the start of each sess
 
 ## Build
 1. `extension/src/brain/brain.ts` (pure, testable with a fake file system):
-   - `ensureBrain(root)`: if missing, create `brain/me.md`, `brain/project.md`, `brain/tricks.md`, `brain/good-for.md`, `brain/log/` with short starter templates (headings + one hint line each, plain English). Never overwrite existing files.
+   - `ensureBrain(root)`: if missing, create `brain/me.md`, `brain/project.md`, `brain/tricks.md`, `brain/good-for.md`, `brain/log/` with short starter templates (headings + one hint line each, plain English). Never overwrite existing files. `project.md` starts with a short `## START HERE` (what this project is, written once at the welcome) and an `## Updates` section (newest at the bottom).
+   - **The brain only ever grows. Nothing is overwritten.** `appendEntry(root, file, session, text)` adds a new entry to the end of a brain file, headed `### <date> <time> · <session label>`. It is the only way the extension writes to brain files after creating them. Use a plain append (`fs.appendFile`), never read-modify-write, so two windows saving at once can't wipe each other out. Test it with two appends racing.
+   - **Every chat declares itself as a separate session.** Each chat gets a label: a short id plus a topic, e.g. `Session 7f3a · login page`. The topic comes from the first message (or from "continue working on X" → topic X), and the user can rename it in the header. Show the label in the chat header.
    - `ensureFrontDoor(root)`: if the workspace has no `AGENTS.md`, create one from the template below. If it has one, add our section between `<!-- meta-betta:start -->` and `<!-- meta-betta:end -->` markers (replace only that section on later runs; never touch the rest).
 2. Front-door section template (keep it short; Muse reads it every session):
    ```
    <!-- meta-betta:start -->
    ## Meta Betta brain (read first, every session)
-   1. Read brain/me.md, brain/project.md (START HERE section), brain/tricks.md and today's brain/log file if it exists.
-   2. Open your first reply with "Here's where we're up to:" and 2–3 plain lines from brain/project.md, then ask what we're doing today.
+   1. Read brain/me.md, brain/project.md (START HERE plus the last 10 entries under Updates), brain/tricks.md and today's brain/log file if it exists.
+   2. Open your first reply with "Here's where we're up to:" and 2–3 plain lines from the latest updates, then ask what we're doing today. If the user says "continue working on X", use the latest entries about X and carry on from there.
    3. Talk to the user the way brain/me.md says. Plain English, no jargon.
    4. Before building, propose the simplest version in one or two lines and wait for a yes.
    5. When something fails, try 2–3 other ways before giving up, and say plainly which one worked. Add any workaround that worked to brain/tricks.md.
    6. Finish every job with: what you did (plain words), how to use it (click by click), anything you couldn't check.
    7. Never edit files outside this workspace.
+   8. Never rewrite or delete anything in brain/. The brain only grows; the extension adds new entries for you when we save.
    <!-- meta-betta:end -->
    ```
 3. **Follow VS Code's own Workspace Trust. No extra card.** Works like other chat extensions: the user opens a folder in VS Code, starts chatting, and that folder is the project.
@@ -29,7 +32,7 @@ Every workspace gets a `brain/` folder that Muse reads at the start of each sess
    - **No folder open:** show "Open a folder to start" with an [Open Folder…] button (runs `workbench.action.files.openFolder`). Nothing fancier.
    - A setting `metaBetta.memory` (default `true`) lets people turn the brain off entirely.
 4. **Brain panel:** a second webview view `metaBetta.brain` ("Brain") under the chat in the same container. It shows each file as a card: title, last updated, the first ~6 lines (for project.md: the START HERE section). Click a card → open the file in the editor. Refresh when files change (FileSystemWatcher on `brain/**`).
-5. Tests for `ensureBrain` / `ensureFrontDoor` (create, don't overwrite, marker replacement).
+5. Tests for `ensureBrain` / `ensureFrontDoor` (create, don't overwrite, marker replacement) and `appendEntry` (adds to the end, never changes earlier text, two racing appends both survive).
 
 ## Done when
 - Build + tests pass.
@@ -37,6 +40,7 @@ Every workspace gets a `brain/` folder that Muse reads at the start of each sess
 - F5 on an untrusted folder → "Memory is off…" line, no files created; trusting the folder in VS Code switches memory on without reloading.
 - F5 with no folder open → "Open a folder to start" button works.
 - Next session, Muse's first reply starts with "Here's where we're up to:".
+- Open a second window on the same folder, type "continue working on <topic>", and it picks up from that topic's latest entries. The chat header shows its own session label.
 
 ## Handover
 Plain English + commit `04: brain folder and brain panel`.
