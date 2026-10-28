@@ -26,10 +26,60 @@ describe("toolRowText", () => {
     assert.equal(row.done, true);
   });
 
-  it("falls back to the tool name without a label", () => {
+  it("falls back to friendly words from the tool and path", () => {
     assert.equal(
-      toolRowText({ kind: "toolCall", tool: "mystery", status: "inProgress" }).text,
-      "🔧 mystery",
+      toolRowText({
+        kind: "toolCall",
+        tool: "write_file",
+        args: JSON.stringify({ path: "hello.txt" }),
+        status: "inProgress",
+      }).text,
+      "📄 Writing hello.txt",
+    );
+    assert.equal(
+      toolRowText({
+        kind: "toolCall",
+        tool: "write_file",
+        args: JSON.stringify({ path: "hello.txt" }),
+        status: "completed",
+      }).text,
+      "📄 Wrote hello.txt ✓",
+    );
+  });
+
+  it("names shell tools from their command", () => {
+    assert.equal(
+      toolRowText({
+        kind: "toolCall",
+        tool: "bash",
+        args: JSON.stringify({ command: "npm test" }),
+        status: "completed",
+      }).text,
+      "▶ Ran npm test ✓",
+    );
+  });
+
+  it("prettifies unknown tools instead of showing the raw id", () => {
+    assert.equal(
+      toolRowText({ kind: "toolCall", tool: "mystery_box", status: "inProgress" }).text,
+      "🔧 Mystery box",
+    );
+    assert.equal(
+      toolRowText({ kind: "toolCall", tool: "mystery_box", args: "not json", status: "completed" }).text,
+      "🔧 Mystery box ✓",
+    );
+  });
+
+  it("words fallback failures without implying success", () => {
+    assert.equal(
+      toolRowText({
+        kind: "toolCall",
+        tool: "write_file",
+        args: JSON.stringify({ path: "hello.txt" }),
+        status: "failed",
+        failureReason: "denied",
+      }).text,
+      "📄 Writing hello.txt (didn't work: denied)",
     );
   });
 

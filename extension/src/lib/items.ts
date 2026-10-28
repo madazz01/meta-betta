@@ -4,6 +4,7 @@
 export interface ToolItemView {
   kind: string;
   tool?: string;
+  args?: string;
   displayLabel?: { active: string; done: string; neutral: string };
   status: string;
   failureReason?: string;
@@ -25,7 +26,7 @@ export function toolRowText(item: ToolItemView): ToolRow {
   if (item.kind === "userShell") {
     text = `▶ ${truncate(item.commandText?.trim() || "shell command", 80)}`;
   } else if (item.kind === "toolCall") {
-    text = `${toolIcon(item.tool)} ${toolLabel(item)}`;
+    text = `${toolIcon(item.tool)} ${toolLabel(item, done && !failed)}`;
   } else {
     const extra = item.fallbackText ? ` — ${truncate(singleLine(item.fallbackText), 100)}` : "";
     text = `Working…${extra}`;
@@ -48,10 +49,10 @@ export function reasoningText(
   return joined || text || "";
 }
 
-function toolLabel(item: ToolItemView): string {
+function toolLabel(item: ToolItemView, past: boolean): string {
   const label = item.displayLabel;
   if (!label) {
-    return item.tool ?? "tool";
+    return friendlyToolText(item.tool, item.args, past);
   }
   if (item.status === "completed") {
     return label.done;
@@ -60,6 +61,74 @@ function toolLabel(item: ToolItemView): string {
     return label.active;
   }
   return label.neutral;
+}
+
+const TOOL_VERBS: { pattern: RegExp; active: string; past: string }[] = [
+  { pattern: /(write|create|save)/, active: "Writing", past: "Wrote" },
+  { pattern: /(edit|apply|patch)/, active: "Editing", past: "Edited" },
+  { pattern: /(delete|remove)/, active: "Deleting", past: "Deleted" },
+  { pattern: /(exec|bash|shell|command|run|test|build)/, active: "Running", past: "Ran" },
+  { pattern: /(read|cat)/, active: "Reading", past: "Read" },
+  { pattern: /(list|glob)/, active: "Listing", past: "Listed" },
+  { pattern: /(search|grep|find)/, active: "Searching", past: "Searched" },
+];
+
+/**
+ * Plain words for a tool call without a server label, e.g. "Wrote hello.txt".
+ * Never the raw tool id.
+ */
+function friendlyToolText(tool: string | undefined, args: string | undefined, past: boolean): string {
+  const name = (tool ?? "").toLowerCase();
+  const target = argTarget(args);
+  for (const verb of TOOL_VERBS) {
+    if (verb.pattern.test(name)) {
+      const word = past ? verb.past : verb.active;
+      return target ? `${word} ${target}` : word;
+    }
+  }
+  const pretty = prettifyTool(tool);
+  return target ? `${pretty} ${target}` : pretty;
+}
+
+function prettifyTool(tool: string | undefined): string {
+  const words = (tool ?? "tool").replace(/[_-]+/g, " ").trim() || "tool";
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function argTarget(args: string | undefined): string | undefined {
+  if (!args) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return undefined;
+  }
+  const record = parsed as Record<string, unknown>;
+  for (const key of [
+    "path",
+    "filePath",
+    "file",
+    "filename",
+    "target",
+    "dir",
+    "directory",
+    "command",
+    "cmd",
+    "pattern",
+    "query",
+    "url",
+  ]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return truncate(value.trim(), 80);
+    }
+  }
+  return undefined;
 }
 
 function toolIcon(tool: string | undefined): string {

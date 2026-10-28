@@ -48,6 +48,12 @@
           "type": "string",
           "default": "",
           "description": "Path to the Muse binary. Leave empty to find it automatically."
+        },
+        "metaBetta.openIn": {
+          "type": "string",
+          "enum": ["editor", "sidebar"],
+          "default": "editor",
+          "description": "Where the Meta Betta chat lives: an editor tab or the side bar."
         }
       }
     }

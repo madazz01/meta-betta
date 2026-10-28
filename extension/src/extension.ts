@@ -1,21 +1,41 @@
 import * as vscode from "vscode";
-import { ChatViewProvider } from "./chatView.js";
+import { ChatController } from "./chatController.js";
+import { openChatPanel } from "./chatPanel.js";
+import { ChatViewProvider, readOpenIn } from "./chatView.js";
 
-let provider: ChatViewProvider | undefined;
+let controller: ChatController | undefined;
+let viewProvider: ChatViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  provider = new ChatViewProvider(context.extensionUri);
+  controller = new ChatController(context.extensionUri);
+  viewProvider = new ChatViewProvider(context.extensionUri, controller, () => {
+    if (controller) {
+      openChatPanel(context.extensionUri, controller);
+    }
+  });
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider),
+    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, viewProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
     vscode.commands.registerCommand("metaBetta.open", async () => {
-      await vscode.commands.executeCommand("metaBetta.chat.focus");
+      if (readOpenIn() === "sidebar") {
+        await vscode.commands.executeCommand("metaBetta.chat.focus");
+      } else if (controller) {
+        openChatPanel(context.extensionUri, controller);
+      }
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("metaBetta.openIn")) {
+        viewProvider?.sync();
+      }
     }),
   );
 }
 
 export function deactivate(): Promise<void> | void {
-  const current = provider;
-  provider = undefined;
+  const current = controller;
+  controller = undefined;
+  viewProvider = undefined;
   if (current) {
     return current.dispose();
   }

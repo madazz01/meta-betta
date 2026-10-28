@@ -37,6 +37,15 @@
     }
   }
 
+  function renderReply(text) {
+    if (window.MetaBettaMarkdown) {
+      return window.MetaBettaMarkdown.renderMarkdown(text);
+    }
+    const fallback = document.createElement("div");
+    fallback.textContent = text;
+    return fallback.innerHTML;
+  }
+
   function addUserBubble(text) {
     hideEmptyState();
     const bubble = document.createElement("div");
@@ -55,7 +64,7 @@
       messagesEl.appendChild(bubble);
       assistantEls.set(id, bubble);
     }
-    bubble.textContent = text;
+    bubble.innerHTML = renderReply(text);
     scrollToBottom();
   }
 
@@ -182,10 +191,18 @@
     if (!text) {
       return;
     }
-    addUserBubble(text);
     input.value = "";
     setStatus("");
     vscode.postMessage({ type: "send", text });
+  });
+
+  messagesEl.addEventListener("click", (event) => {
+    const anchor = event.target.closest ? event.target.closest("a[href]") : null;
+    if (!anchor) {
+      return;
+    }
+    event.preventDefault();
+    vscode.postMessage({ type: "openLink", url: anchor.getAttribute("href") });
   });
 
   input.addEventListener("keydown", (event) => {
@@ -201,6 +218,11 @@
       return;
     }
     switch (message.type) {
+      case "user":
+        if (typeof message.text === "string") {
+          addUserBubble(message.text);
+        }
+        break;
       case "assistant":
         if (typeof message.id === "string" && typeof message.text === "string") {
           upsertAssistant(message.id, message.text);

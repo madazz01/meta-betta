@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src __CSP_SOURCE__; script-src 'nonce-__NONCE__';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="__STYLE_URI__">
+  <title>Meta Betta</title>
+</head>
+<body>
+  <main id="stub">
+    <p>Your chat lives in an editor tab, so the file list stays usable.</p>
+    <button id="open" class="btn" type="button">Open chat</button>
+    <p class="hint">Prefer it here? Set Meta Betta: Open In to sidebar.</p>
+  </main>
+  <script nonce="__NONCE__">
+    (function () {
+      "use strict";
+      var vscode = acquireVsCodeApi();
+      document.getElementById("open").addEventListener("click", function () {
+        vscode.postMessage({ type: "openChat" });
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -108,9 +108,11 @@ export class MuseHost {
   }
 
   /**
-   * Stop showing the current turn. The SDK surface in 1.4.14 has no
-   * turn/cancel verb, so this stops the panel (late events are dropped) while
-   * the server turn runs out in the background; a new message queues behind it.
+   * Stop showing the current turn. SDK 1.4.14 exposes no turn/cancel verb —
+   * the connection is a private field on Session/MuseClient, so there is no
+   * supported way to send one — so this stops the panel (late events are
+   * dropped) while the server turn runs out in the background; a new message
+   * queues behind it.
    */
   public stop(): void {
     this.turnGen += 1;
@@ -283,6 +285,7 @@ export class MuseHost {
         const row = toolRowText({
           kind: String(item.kind),
           tool: item.tool,
+          args: item.args,
           displayLabel: item.displayLabel,
           status: String(item.status),
           failureReason: item.failureReason,

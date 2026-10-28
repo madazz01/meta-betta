@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#c08a52" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M4 10h12v5a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5v-5z"/>
-  <path d="M16 11h1.5a2.5 2.5 0 0 1 0 5H16"/>
-  <path d="M8 6.5c0-1 .8-1 .8-2M12 6.5c0-1 .8-1 .8-2"/>
-  <path d="M3 21h13"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Meta Betta: an M whose right leg is also the stem of a lowercase b. -->
+  <path d="M2.5 20V4l6.75 8L16 4v16"/>
+  <path d="M16 14.6a3.2 3.2 0 1 1 0 5.4"/>
 </svg>
