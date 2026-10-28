@@ -44,6 +44,10 @@ Developers (e.g. people in the Meta hackathon). They already know VS Code, files
 5. **Test what you build.** Unit tests with Node's built-in runner (`node --test`) for pure logic. Say plainly what you could not test (e.g. "I couldn't click through the panel; please try X").
 6. **Finish with a plain handover:** what you built (2–4 lines), exactly how to try it (click-by-click), what you couldn't check, and suggestions. No code dumps in the handover.
 7. **Commit when a brief is done**, one commit per brief, message starting with the brief number, e.g. `01: extension skeleton with chat panel`. Don't push.
+8. **Sign your commits.** End every commit message with a blank line and then this exact line, with the model you're running as:
+   `Built-by: Muse Code (<model id, e.g. muse-spark-1.3-contributor>)`
+   Fix-up commits after review use the same line. (Claude's commits carry `Co-Authored-By: Claude …` instead, so `git log` shows who did what.)
+9. **Add to config files, never replace them.** When a file like `.gitignore`, `package.json` or `AGENTS.md` already exists, edit it in place and keep everything already there.
 
 ## Muse Code SDK — facts already proven (28 Oct, see `spike/`)
 
