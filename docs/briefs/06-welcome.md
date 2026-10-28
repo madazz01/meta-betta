@@ -6,8 +6,7 @@ Read `AGENTS.md` first. Briefs 01–05 must be done.
 The first time someone opens Meta Betta in a workspace with an empty brain, a **welcome under a minute**: their name, what we're doing here, and one short message on how Meta Betta remembers things. Users installing a VS Code extension already know their way around: don't explain VS Code, chat or files, only what's new (the memory).
 
 ## Build
-1. **Step 0 is the trust + brain card from brief 04** ("To remember you and this project, I need to trust this folder and add a small brain/ folder. OK?", or "Pick where to keep your project" when no folder is open). The welcome continues only after Yes; on "Not now" skip straight to normal chat.
-   Then trigger the rest when the brain exists but `brain/me.md` is still the starter template. (Skip button always visible.)
+1. Trigger: memory is on (trusted folder, brief 04) and `brain/me.md` is still the starter template. No trust card here: opening a trusted folder in VS Code is the setup, same as other chat extensions. (Skip button always visible.)
 2. Send Muse the welcome script (in `extension/src/brain/prompts.ts`). Muse runs it one step at a time, waiting for the user each step:
    - **Hello:** "G'day! What should I call you?" → writes their name to `brain/me.md`.
    - **What are we doing?** "What are we working on in this folder?" (a line or two is plenty) → writes the START HERE section of `brain/project.md`, then plays it back in one line.

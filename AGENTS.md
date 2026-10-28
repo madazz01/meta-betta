@@ -52,7 +52,7 @@ Developers (e.g. people in the Meta hackathon). They already know VS Code, files
 
 ## Muse Code features we switch on (don't reinvent them)
 
-- `AGENTS.md` at the workspace root is read automatically each session → our "front door". **Only if the workspace is trusted:** spawn the host with `args: ["serve", "--trust-workspace"]`, otherwise Muse ignores AGENTS.md entirely (proven 28 Oct: without it, "Morning" got a generic reply; with it, Muse opened with "Here's where we're up to:" from the brain). Ask the user once before trusting a workspace.
+- `AGENTS.md` at the workspace root is read automatically each session → our "front door". **Only if the workspace is trusted:** spawn the host with `args: ["serve", "--trust-workspace"]`, otherwise Muse ignores AGENTS.md entirely (proven 28 Oct: without it, "Morning" got a generic reply; with it, Muse opened with "Here's where we're up to:" from the brain). Follow VS Code's own Workspace Trust (`vscode.workspace.isTrusted`): trusted folder → pass the flag and turn memory on; Restricted Mode → no flag, memory off (brief 04).
 - In a trusted workspace (default approval mode `on-request`), Muse edited files inside the workspace without an approval prompt during the brain test; approval cards still matter for shell commands and anything outside.
 - Memory: `MEMORY.md` index + one Markdown file per topic → Muse recalls it automatically.
 
