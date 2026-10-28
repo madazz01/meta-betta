@@ -1,0 +1,54 @@
+{
+  "name": "meta-betta",
+  "displayName": "Meta Betta",
+  "description": "The dev's assistant: a friendly chat panel on top of Muse Code, with a memory of you and your project.",
+  "publisher": "madazz01",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "activationEvents": [
+    "onView:metaBetta.chat",
+    "onCommand:metaBetta.open"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "metaBetta.open",
+        "title": "Meta Betta: Open chat"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "metaBetta",
+          "title": "Meta Betta",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "metaBetta": [
+        {
+          "id": "metaBetta.chat",
+          "name": "Chat"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "tsc -p . && node --test \"out/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  }
+}

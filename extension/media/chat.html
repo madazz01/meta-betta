@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src __CSP_SOURCE__; script-src 'nonce-__NONCE__';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="__STYLE_URI__">
+  <title>Meta Betta Chat</title>
+</head>
+<body>
+  <main id="chat">
+    <div id="messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
+    <p id="empty-state">Morning! What are we working on?</p>
+    <p id="status" aria-live="polite"></p>
+    <form id="composer">
+      <textarea id="input" rows="2" placeholder="Type a message…" aria-label="Type a message"></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+  <script nonce="__NONCE__" src="__SCRIPT_URI__"></script>
+</body>
+</html>
