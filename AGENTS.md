@@ -22,7 +22,7 @@ We copy the *shape and feel* of good chat extensions. **Never copy code from any
 
 ## Who it's for
 
-Developers in the Meta hackathon who are new to agents, and later anyone who finds AI a bit scary. Every word the user sees must be **plain English**: no jargon, no stack traces, no "coerced numeric strings". Say what it does for them.
+Developers (e.g. people in the Meta hackathon). They already know VS Code, files and chat, so don't over-explain the basics; what's new to them is working with an agent that remembers. Every word the user sees is still **plain English**: no stack traces, no "coerced numeric strings". Say what it does for them, briefly.
 
 ## Hard rules
 
