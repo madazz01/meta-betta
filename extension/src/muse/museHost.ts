@@ -46,6 +46,8 @@ export type MuseHostEvent =
 export interface MuseHostOptions {
   museBin: string;
   version: string;
+  /** Pass --trust-workspace so Muse reads the workspace AGENTS.md. */
+  trustWorkspace: boolean;
   emit: (event: MuseHostEvent) => void;
   /**
    * Show an approval card and resolve with the clicked choiceId, or undefined
@@ -347,7 +349,8 @@ export class MuseHost {
     // holds the connection (needed to interrupt a running turn).
     // See spike/stop.mjs.
     const { MuseClient, spawnMspConnection, readSessionDurability } = await import("@muse-code/sdk");
-    const handshake = spawnMspConnection({ command: this.options.museBin, args: ["serve"] });
+    const args = this.options.trustWorkspace ? ["serve", "--trust-workspace"] : ["serve"];
+    const handshake = spawnMspConnection({ command: this.options.museBin, args });
     let client: MuseClient | undefined;
     try {
       const spawned = await handshake.initialize({

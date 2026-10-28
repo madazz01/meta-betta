@@ -13,8 +13,15 @@
   ],
   "activationEvents": [
     "onView:metaBetta.chat",
+    "onView:metaBetta.brain",
     "onCommand:metaBetta.open"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Memory (brain folder) needs a trusted folder."
+    }
+  },
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -38,6 +45,11 @@
           "id": "metaBetta.chat",
           "type": "webview",
           "name": "Chat"
+        },
+        {
+          "id": "metaBetta.brain",
+          "type": "webview",
+          "name": "Brain"
         }
       ]
     },
@@ -54,6 +66,11 @@
           "enum": ["editor", "sidebar"],
           "default": "editor",
           "description": "Where the Meta Betta chat lives: an editor tab or the side bar."
+        },
+        "metaBetta.memory": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remember this folder in brain/ files that Muse reads every session. Needs a trusted folder."
         }
       }
     }

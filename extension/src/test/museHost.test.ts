@@ -16,6 +16,7 @@ describe("MuseHost", () => {
     const host = new MuseHost({
       museBin: "meta-betta-definitely-not-a-real-binary",
       version: "0.0.1",
+      trustWorkspace: false,
       emit: (event) => {
         events.push(event);
       },
@@ -188,6 +189,7 @@ function fakeRunningTurn(
     host: new MuseHost({
       museBin: "unused",
       version: "0.0.1",
+      trustWorkspace: false,
       emit: (event) => {
         events.push(event);
       },
@@ -267,6 +269,7 @@ function fakeStoredSession(options: {
     host: new MuseHost({
       museBin: "unused",
       version: "0.0.1",
+      trustWorkspace: false,
       emit: (event) => {
         events.push(event);
       },

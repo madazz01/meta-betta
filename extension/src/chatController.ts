@@ -5,6 +5,14 @@ import { parseSendMessage } from "./lib/chat.js";
 import { parseFileLink } from "./lib/links.js";
 import { buildTranscript, cleanTranscript } from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
+import {
+  cleanTopic,
+  createSessionId,
+  ensureBrain,
+  ensureFrontDoor,
+  formatSessionLabel,
+  topicFromFirstMessage,
+} from "./brain/brain.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import { type ApprovalCardEvent, MuseHost, type MuseHostEvent } from "./muse/museHost.js";
 
@@ -38,6 +46,9 @@ export class ChatController {
   private host?: MuseHost;
   private prepared = false;
   private preparing: Promise<void> | undefined;
+  private memoryAnnounced = false;
+  private sessionId = createSessionId();
+  private sessionTopic = "";
   private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
 
   public constructor(
@@ -52,7 +63,56 @@ export class ChatController {
     }
     sink.post({ type: "turn", state: this.running ? "started" : "done" });
     sink.post({ type: "status", text: this.lastStatus });
+    sink.post({ type: "sessionLabel", label: this.sessionLabel() });
+    if (!vscode.workspace.workspaceFolders?.[0]) {
+      sink.post({ type: "noFolder" });
+    }
     void this.prepare();
+  }
+
+  /** Re-check the no-folder card when the open folders change. */
+  public refreshFolder(): void {
+    this.broadcast({ type: vscode.workspace.workspaceFolders?.[0] ? "hideNoFolder" : "noFolder" });
+  }
+
+  public async openFolder(): Promise<void> {
+    await vscode.commands.executeCommand("workbench.action.files.openFolder");
+  }
+
+  public async renameSession(): Promise<void> {
+    const topic = await vscode.window.showInputBox({
+      title: "Name this chat",
+      value: this.sessionTopic,
+      prompt: "A short topic for this chat, shown in the header.",
+    });
+    if (topic === undefined) {
+      return;
+    }
+    this.sessionTopic = cleanTopic(topic);
+    this.broadcastSessionLabel();
+  }
+
+  /** VS Code just granted workspace trust: switch memory on. */
+  public async trustGranted(): Promise<void> {
+    if (!vscode.workspace.isTrusted) {
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return;
+    }
+    if (!vscode.workspace.getConfiguration("metaBetta").get<boolean>("memory", true)) {
+      return;
+    }
+    if (this.host) {
+      await this.host.dispose();
+      this.host = undefined;
+      this.running = false;
+      this.broadcast({ type: "turn", state: "done" });
+      this.broadcast({ type: "status", text: "Ready" });
+    }
+    this.memoryAnnounced = false;
+    await this.ensureMemory(folder);
   }
 
   public unbind(sink: ChatSink): void {
@@ -69,18 +129,21 @@ export class ChatController {
   public async send(text: string): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      this.recordAndBroadcast({
-        type: "notice",
-        kind: "info",
-        text: "Open a folder first, then ask me something — I work inside your project.",
-      });
+      this.broadcast({ type: "noFolder" });
       return;
     }
     // History first, so yesterday's messages stay above a fresh reply.
     await this.prepare();
-    this.host ??= this.createHost();
+    const host = await this.ensureHost(folder);
+    if (!this.sessionTopic) {
+      const topic = topicFromFirstMessage(text);
+      if (topic) {
+        this.sessionTopic = topic;
+        this.broadcastSessionLabel();
+      }
+    }
     this.recordAndBroadcast({ type: "user", text });
-    await this.host.send(text, folder.uri.fsPath);
+    await host.send(text, folder.uri.fsPath);
   }
 
   public stop(): void {
@@ -105,9 +168,9 @@ export class ChatController {
     if (!folder) {
       return;
     }
-    this.host ??= this.createHost();
+    const host = await this.ensureHost(folder);
     try {
-      await this.host.newSession(folder.uri.fsPath);
+      await host.newSession(folder.uri.fsPath);
     } catch (error) {
       this.broadcast({
         type: "notice",
@@ -122,6 +185,9 @@ export class ChatController {
     this.storeSet(TRANSCRIPT_KEY, undefined);
     this.running = false;
     this.lastStatus = "";
+    this.sessionId = createSessionId();
+    this.sessionTopic = "";
+    this.broadcastSessionLabel();
     this.broadcast({ type: "clear" });
     this.broadcast({ type: "turn", state: "done" });
     this.broadcast({ type: "status", text: "Ready" });
@@ -175,10 +241,10 @@ export class ChatController {
       if (!folder || !savedId?.trim()) {
         return;
       }
-      this.host ??= this.createHost();
+      const host = await this.ensureHost(folder);
       let shown = 0;
       try {
-        shown = await this.host.prepare(folder.uri.fsPath);
+        shown = await host.prepare(folder.uri.fsPath);
       } catch {
         // Leave the panel usable; send() surfaces startup problems properly.
         shown = 0;
@@ -198,10 +264,61 @@ export class ChatController {
     }
   }
 
-  private createHost(): MuseHost {
+  private async ensureHost(folder: vscode.WorkspaceFolder): Promise<MuseHost> {
+    if (!this.host) {
+      const trustWorkspace = await this.ensureMemory(folder);
+      this.host = this.createHost(trustWorkspace);
+    }
+    return this.host;
+  }
+
+  /**
+   * Decide memory from the setting + Workspace Trust; create the brain and
+   * front door when on. Returns the --trust-workspace flag for the host.
+   */
+  private async ensureMemory(folder: vscode.WorkspaceFolder): Promise<boolean> {
+    const setting = vscode.workspace.getConfiguration("metaBetta").get<boolean>("memory", true);
+    const on = setting && vscode.workspace.isTrusted;
+    if (on) {
+      await ensureBrain(folder.uri.fsPath);
+      await ensureFrontDoor(folder.uri.fsPath);
+    }
+    if (!this.memoryAnnounced) {
+      this.memoryAnnounced = true;
+      // Ephemeral, like turn/status: announcing again on every reopen would
+      // flood the history with the same line.
+      if (on) {
+        this.broadcast({ type: "notice", kind: "info", text: "Memory is on for this folder (brain/)." });
+      } else if (!setting) {
+        this.broadcast({
+          type: "notice",
+          kind: "info",
+          text: "Memory is off. Turn it on with the Meta Betta › Memory setting.",
+        });
+      } else {
+        this.broadcast({
+          type: "notice",
+          kind: "info",
+          text: "Memory is off because VS Code doesn't trust this folder. Trust it (Manage Workspace Trust) to turn memory on.",
+        });
+      }
+    }
+    return on;
+  }
+
+  private sessionLabel(): string {
+    return formatSessionLabel(this.sessionId, this.sessionTopic);
+  }
+
+  private broadcastSessionLabel(): void {
+    this.broadcast({ type: "sessionLabel", label: this.sessionLabel() });
+  }
+
+  private createHost(trustWorkspace: boolean): MuseHost {
     return new MuseHost({
       museBin: findMuseBin(vscode.workspace.getConfiguration("metaBetta").get<string>("museBin", "")),
       version: readVersion(this.extensionUri),
+      trustWorkspace,
       emit: (event) => this.onHostEvent(event),
       askApproval: (card) => this.askApproval(card),
       sessionStore: {
@@ -293,6 +410,14 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
   }
   if (message.type === "newChat") {
     void controller.newChat();
+    return;
+  }
+  if (message.type === "renameSession") {
+    void controller.renameSession();
+    return;
+  }
+  if (message.type === "openFolder") {
+    void controller.openFolder();
     return;
   }
   if (message.type === "approve" && typeof message.id === "string" && typeof message.choiceId === "string") {

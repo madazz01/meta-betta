@@ -10,9 +10,13 @@
 <body>
   <main id="chat">
     <header id="topbar">
-      <span id="chat-title">Chat</span>
+      <button id="session-label" class="label-btn" type="button" title="Rename this chat">…</button>
       <button id="new-chat" class="btn small" type="button">New chat</button>
     </header>
+    <div id="no-folder" hidden>
+      <p>Open a folder to start</p>
+      <button id="open-folder" class="btn" type="button">Open Folder…</button>
+    </div>
     <div id="messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
     <p id="empty-state">Morning! What are we working on?</p>
     <form id="composer">

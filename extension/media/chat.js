@@ -10,6 +10,9 @@
   const input = document.getElementById("input");
   const sendButton = document.getElementById("send");
   const newChatButton = document.getElementById("new-chat");
+  const sessionLabelButton = document.getElementById("session-label");
+  const noFolderEl = document.getElementById("no-folder");
+  const openFolderButton = document.getElementById("open-folder");
 
   let running = false;
   const assistantEls = new Map();
@@ -197,6 +200,14 @@
     vscode.postMessage({ type: "newChat" });
   });
 
+  sessionLabelButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "renameSession" });
+  });
+
+  openFolderButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "openFolder" });
+  });
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (running) {
@@ -281,6 +292,17 @@
         break;
       case "clear":
         clearChat();
+        break;
+      case "sessionLabel":
+        if (typeof message.label === "string") {
+          sessionLabelButton.textContent = message.label;
+        }
+        break;
+      case "noFolder":
+        noFolderEl.hidden = false;
+        break;
+      case "hideNoFolder":
+        noFolderEl.hidden = true;
         break;
       default:
         break;

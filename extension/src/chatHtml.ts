@@ -3,16 +3,16 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { createNonce } from "./lib/nonce.js";
 
-export type ChatTemplate = "chat" | "stub";
+export type ChatTemplate = "chat" | "stub" | "brain";
 
-/** Webview HTML for the full chat ("chat") or the sidebar stub ("stub"). */
+/** Webview HTML for the full chat, the sidebar stub, or the brain panel. */
 export function buildChatHtml(
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
   template: ChatTemplate,
 ): string {
   const mediaPath = path.join(extensionUri.fsPath, "media");
-  const file = template === "chat" ? "chat.html" : "stub.html";
+  const file = template === "chat" ? "chat.html" : template === "stub" ? "stub.html" : "brain.html";
   const html = fs.readFileSync(path.join(mediaPath, file), "utf8");
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "chat.css"));
   const markdownUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "markdown.js"));

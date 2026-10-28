@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src __CSP_SOURCE__; script-src 'nonce-__NONCE__';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="__STYLE_URI__">
+  <title>Meta Betta Brain</title>
+</head>
+<body>
+  <main id="brain">
+    <p id="brain-status" hidden></p>
+    <div id="cards"></div>
+  </main>
+  <script nonce="__NONCE__">
+    (function () {
+      "use strict";
+      var vscode = acquireVsCodeApi();
+      var statusEl = document.getElementById("brain-status");
+      var cardsEl = document.getElementById("cards");
+
+      function showStatus(text) {
+        statusEl.hidden = false;
+        statusEl.textContent = text;
+        cardsEl.replaceChildren();
+      }
+
+      function showCards(cards) {
+        statusEl.hidden = true;
+        cardsEl.replaceChildren();
+        for (var i = 0; i < cards.length; i += 1) {
+          cardsEl.appendChild(renderCard(cards[i]));
+        }
+      }
+
+      function renderCard(card) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "brain-card";
+        var title = document.createElement("span");
+        title.className = "brain-title";
+        title.textContent = card.title;
+        var updated = document.createElement("span");
+        updated.className = "brain-updated";
+        updated.textContent = card.updated;
+        var excerpt = document.createElement("span");
+        excerpt.className = "brain-excerpt";
+        excerpt.textContent = card.excerpt;
+        button.appendChild(title);
+        button.appendChild(updated);
+        button.appendChild(excerpt);
+        button.addEventListener("click", function () {
+          vscode.postMessage({ type: "openBrainFile", file: card.file });
+        });
+        return button;
+      }
+
+      window.addEventListener("message", function (event) {
+        var message = event.data;
+        if (!message || typeof message !== "object") {
+          return;
+        }
+        if (message.type === "brain" && Array.isArray(message.cards)) {
+          showCards(message.cards);
+        } else if (message.type === "brainStatus" && typeof message.text === "string") {
+          showStatus(message.text);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
