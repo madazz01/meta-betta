@@ -45,7 +45,9 @@
           "id": "metaBetta.chat",
           "type": "webview",
           "name": "Chat"
-        },
+        }
+      ],
+      "explorer": [
         {
           "id": "metaBetta.brain",
           "type": "webview",

@@ -101,7 +101,7 @@ export const FRONT_DOOR_SECTION = `<!-- meta-betta:start -->
 2. Open your first reply with "Here's where we're up to:" and 2–3 plain lines from the latest updates, then ask what we're doing today. If the user says "continue working on X", use the latest entries about X and carry on from there.
 3. Talk to the user the way brain/me.md says. Plain English, no jargon.
 4. Before building, propose the simplest version in one or two lines and wait for a yes.
-5. When something fails, try 2–3 other ways before giving up, and say plainly which one worked. Add any workaround that worked to brain/tricks.md.
+5. When something fails, try 2–3 other ways before giving up, and say plainly which one worked. Mention any workaround that worked, and it gets saved to brain/tricks.md when we save.
 6. Finish every job with: what you did (plain words), how to use it (click by click), anything you couldn't check.
 7. Never edit files outside this workspace.
 8. Never rewrite or delete anything in brain/. The brain only grows; the extension adds new entries for you when we save.
@@ -120,13 +120,10 @@ export async function ensureFrontDoor(root: string, fs: BrainFs = nodeBrainFs): 
   }
   const content = await fs.readFile(target);
   const start = content.indexOf(FRONT_DOOR_START);
-  if (start === -1) {
+  const end = start === -1 ? -1 : content.indexOf(FRONT_DOOR_END, start);
+  if (start === -1 || end === -1) {
+    // No complete section: append a fresh one and keep everything else.
     await fs.writeFile(target, `${content.replace(/\n*$/, "")}\n\n${FRONT_DOOR_SECTION}\n`);
-    return;
-  }
-  const end = content.indexOf(FRONT_DOOR_END, start);
-  if (end === -1) {
-    await fs.writeFile(target, `${content.slice(0, start)}${FRONT_DOOR_SECTION}\n`);
     return;
   }
   const after = end + FRONT_DOOR_END.length;
@@ -179,19 +176,49 @@ export function cleanTopic(text: string): string {
 }
 
 /**
+ * The topic declared by "continue working on X", or undefined for any other
+ * message. Always re-declares the chat's topic, even mid-conversation.
+ */
+export function continuedTopic(text: string): string | undefined {
+  const clean = text.replace(/\s+/g, " ").trim();
+  const match = clean.match(/^continue working on (.+)$/i);
+  if (!match) {
+    return undefined;
+  }
+  const topic = match[1].trim().replace(/[.?…]+$/, "").slice(0, TOPIC_LIMIT);
+  return topic === "" ? undefined : topic;
+}
+
+/**
  * The chat's topic from its first message: "continue working on X" names X,
  * otherwise the first line, bounded.
  */
 export function topicFromFirstMessage(text: string): string {
-  const clean = text.replace(/\s+/g, " ").trim();
-  const continued = clean.match(/^continue working on (.+)$/i);
-  const topic = (continued ? continued[1] : clean).trim().replace(/[.?…]+$/, "");
-  return topic.slice(0, TOPIC_LIMIT);
+  return (
+    continuedTopic(text) ?? text.replace(/\s+/g, " ").trim().replace(/[.?…]+$/, "").slice(0, TOPIC_LIMIT)
+  );
 }
 
 /** `Session 7f3a · login page`, or `Session 7f3a` before the topic is known. */
 export function formatSessionLabel(id: string, topic: string): string {
   return topic ? `Session ${id} · ${topic}` : `Session ${id}`;
+}
+
+export interface StoredSessionLabel {
+  id: string;
+  topic: string;
+}
+
+/** Validate a stored session label; anything else is forgotten. */
+export function cleanSessionLabel(value: unknown): StoredSessionLabel | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const label = value as { id?: unknown; topic?: unknown };
+  if (typeof label.id !== "string" || !label.id.trim() || typeof label.topic !== "string") {
+    return undefined;
+  }
+  return { id: label.id, topic: label.topic };
 }
 
 export interface BrainCardInput {
@@ -243,9 +270,17 @@ export function buildBrainCards(inputs: BrainCardInput[], nowMs: number = Date.n
 
 function firstLines(content: string, count: number): string {
   const lines = content.split("\n");
-  const first = lines.findIndex((line) => line.trim() !== "");
+  let first = lines.findIndex((line) => line.trim() !== "");
   if (first === -1) {
     return "";
+  }
+  // Skip a leading "# heading" line; the card already shows the title.
+  if (/^#{1,6}\s/.test(lines[first] ?? "")) {
+    const afterHeading = lines.findIndex((line, index) => index > first && line.trim() !== "");
+    if (afterHeading === -1) {
+      return "";
+    }
+    first = afterHeading;
   }
   return lines.slice(first, first + count).join("\n").trim();
 }

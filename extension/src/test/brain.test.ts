@@ -5,7 +5,9 @@ import {
   appendEntry,
   brainCardInputs,
   buildBrainCards,
+  cleanSessionLabel,
   cleanTopic,
+  continuedTopic,
   createSessionId,
   ensureBrain,
   ensureFrontDoor,
@@ -82,6 +84,8 @@ describe("ensureFrontDoor", () => {
     const content = [...fs.files.values()][0];
     assert.ok(content.startsWith("<!-- meta-betta:start -->"));
     assert.ok(content.includes("## Meta Betta brain (read first, every session)"));
+    assert.ok(content.includes("Mention any workaround that worked, and it gets saved to brain/tricks.md when we save."));
+    assert.ok(!content.includes("Add any workaround that worked to brain/tricks.md."));
     assert.ok(content.trimEnd().endsWith("<!-- meta-betta:end -->"));
   });
 
@@ -107,6 +111,19 @@ describe("ensureFrontDoor", () => {
     assert.ok(content.includes(FRONT_DOOR_SECTION));
     assert.ok(content.startsWith("# Ours\n"));
     assert.ok(content.endsWith("Tail.\n"));
+  });
+
+  it("appends a fresh section when the end marker is missing, keeping everything", async () => {
+    const fs = fakeFs();
+    const target = join("root", "AGENTS.md");
+    const broken = "# Ours\n\n<!-- meta-betta:start -->\nHalf a section.\n\nTail.\n";
+    fs.files.set(target, broken);
+    await ensureFrontDoor("root", fs);
+
+    const content = fs.files.get(target) ?? "";
+    assert.ok(content.startsWith(broken.replace(/\n*$/, "")));
+    assert.ok(content.includes(FRONT_DOOR_SECTION));
+    assert.ok(content.includes("Tail."));
   });
 
   it("is a no-op when the section is already current", async () => {
@@ -177,6 +194,13 @@ describe("session labels", () => {
     assert.equal(cleanTopic(""), "");
   });
 
+  it("reads continued topics, or nothing", () => {
+    assert.equal(continuedTopic("continue working on the login page"), "the login page");
+    assert.equal(continuedTopic("Continue Working On X..."), "X");
+    assert.equal(continuedTopic("fix the login page"), undefined);
+    assert.equal(continuedTopic("continue working on ..."), undefined);
+  });
+
   it("formats the label with or without a topic", () => {
     assert.equal(formatSessionLabel("7f3a", "login page"), "Session 7f3a · login page");
     assert.equal(formatSessionLabel("7f3a", ""), "Session 7f3a");
@@ -211,7 +235,19 @@ describe("brain cards", () => {
       [{ file: "tricks.md", title: "Tricks", mtimeMs: 1000, content: "# Tricks\n\nRestart it.\n\nTwice.\n" }],
       2000,
     );
-    assert.equal(card?.excerpt, "# Tricks\n\nRestart it.\n\nTwice.");
+    assert.equal(card?.excerpt, "Restart it.\n\nTwice.");
+  });
+
+  it("skips a leading heading but keeps hashtag text", () => {
+    const [headed, tagged] = buildBrainCards(
+      [
+        { file: "me.md", title: "About you", mtimeMs: 1000, content: "## Me\n\nHi.\n" },
+        { file: "me.md", title: "About you", mtimeMs: 1000, content: "#lobby\n\nHi.\n" },
+      ],
+      2000,
+    );
+    assert.equal(headed?.excerpt, "Hi.");
+    assert.equal(tagged?.excerpt, "#lobby\n\nHi.");
   });
 
   it("marks missing files", () => {
@@ -223,7 +259,21 @@ describe("brain cards", () => {
 
 describe("startHereSection", () => {
   it("falls back to the first lines without the heading", () => {
-    assert.equal(startHereSection("# Nope\n\nJust text.\n"), "# Nope\n\nJust text.");
+    assert.equal(startHereSection("# Nope\n\nJust text.\n"), "Just text.");
+  });
+});
+
+describe("cleanSessionLabel", () => {
+  it("accepts a well-formed label", () => {
+    assert.deepEqual(cleanSessionLabel({ id: "7f3a", topic: "login page" }), { id: "7f3a", topic: "login page" });
+    assert.deepEqual(cleanSessionLabel({ id: "7f3a", topic: "" }), { id: "7f3a", topic: "" });
+  });
+
+  it("forgets anything else", () => {
+    assert.equal(cleanSessionLabel(undefined), undefined);
+    assert.equal(cleanSessionLabel({}), undefined);
+    assert.equal(cleanSessionLabel({ id: "", topic: "x" }), undefined);
+    assert.equal(cleanSessionLabel({ id: "7f3a" }), undefined);
   });
 });
 

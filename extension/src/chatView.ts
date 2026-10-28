@@ -14,7 +14,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private view?: vscode.WebviewView;
   private sink?: ChatSink;
-  private mode?: "chat" | "stub";
+  private mode?: "chat" | "blank";
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -39,18 +39,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     });
     webviewView.webview.onDidReceiveMessage((message: unknown) => {
-      if (isRecord(message) && message.type === "openChat") {
-        this.openPanel();
-        return;
-      }
       routeViewMessage(this.controller, message);
     });
     this.sync();
   }
 
   /**
-   * Show the full chat or the stub, per metaBetta.openIn. In editor mode the
-   * stub also opens the editor tab, so clicking the icon opens the chat.
+   * Full chat when openIn is sidebar, otherwise a blank view: the icon just
+   * opens the chat tab.
    */
   public sync(): void {
     const view = this.view;
@@ -72,10 +68,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       return;
     }
-    if (this.mode !== "stub") {
+    if (this.mode !== "blank") {
       this.unbindSink();
-      view.webview.html = buildChatHtml(view.webview, this.extensionUri, "stub");
-      this.mode = "stub";
+      view.webview.html = "<!DOCTYPE html><html><body></body></html>";
+      this.mode = "blank";
     }
     if (view.visible) {
       this.openPanel();
@@ -88,8 +84,4 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.sink = undefined;
     }
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

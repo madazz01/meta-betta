@@ -6,13 +6,16 @@ import { parseFileLink } from "./lib/links.js";
 import { buildTranscript, cleanTranscript } from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
 import {
+  cleanSessionLabel,
   cleanTopic,
+  continuedTopic,
   createSessionId,
   ensureBrain,
   ensureFrontDoor,
   formatSessionLabel,
   topicFromFirstMessage,
 } from "./brain/brain.js";
+import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import { type ApprovalCardEvent, MuseHost, type MuseHostEvent } from "./muse/museHost.js";
 
@@ -32,6 +35,7 @@ type TranscriptEvent =
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
+const SESSION_LABEL_KEY = "metaBetta.sessionLabel";
 const TRANSCRIPT_KEY = "metaBetta.transcript";
 
 /**
@@ -49,7 +53,11 @@ export class ChatController {
   private memoryAnnounced = false;
   private sessionId = createSessionId();
   private sessionTopic = "";
+  private labelSettled = false;
   private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
+  private readonly createHostShared = singleFlight((folder: vscode.WorkspaceFolder) =>
+    this.createHostAsync(folder),
+  );
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -57,6 +65,7 @@ export class ChatController {
   ) {}
 
   public bind(sink: ChatSink): void {
+    this.adoptStoredLabel();
     this.sinks.add(sink);
     for (const event of this.history) {
       sink.post(event);
@@ -89,6 +98,7 @@ export class ChatController {
       return;
     }
     this.sessionTopic = cleanTopic(topic);
+    this.persistSessionLabel();
     this.broadcastSessionLabel();
   }
 
@@ -135,10 +145,19 @@ export class ChatController {
     // History first, so yesterday's messages stay above a fresh reply.
     await this.prepare();
     const host = await this.ensureHost(folder);
-    if (!this.sessionTopic) {
+    // "continue working on X" always starts a newly labelled episode, even
+    // mid-conversation; any other first message just names the topic.
+    const continued = continuedTopic(text);
+    if (continued !== undefined) {
+      this.sessionId = createSessionId();
+      this.sessionTopic = continued;
+      this.persistSessionLabel();
+      this.broadcastSessionLabel();
+    } else if (!this.sessionTopic) {
       const topic = topicFromFirstMessage(text);
       if (topic) {
         this.sessionTopic = topic;
+        this.persistSessionLabel();
         this.broadcastSessionLabel();
       }
     }
@@ -187,6 +206,7 @@ export class ChatController {
     this.lastStatus = "";
     this.sessionId = createSessionId();
     this.sessionTopic = "";
+    this.persistSessionLabel();
     this.broadcastSessionLabel();
     this.broadcast({ type: "clear" });
     this.broadcast({ type: "turn", state: "done" });
@@ -264,11 +284,18 @@ export class ChatController {
     }
   }
 
-  private async ensureHost(folder: vscode.WorkspaceFolder): Promise<MuseHost> {
-    if (!this.host) {
-      const trustWorkspace = await this.ensureMemory(folder);
-      this.host = this.createHost(trustWorkspace);
+  private ensureHost(folder: vscode.WorkspaceFolder): Promise<MuseHost> {
+    if (this.host) {
+      return Promise.resolve(this.host);
     }
+    // Single flight: two hosts would each spawn `muse serve` and their
+    // status lines would overwrite each other.
+    return this.createHostShared(folder);
+  }
+
+  private async createHostAsync(folder: vscode.WorkspaceFolder): Promise<MuseHost> {
+    const trustWorkspace = await this.ensureMemory(folder);
+    this.host = this.createHost(trustWorkspace);
     return this.host;
   }
 
@@ -312,6 +339,26 @@ export class ChatController {
 
   private broadcastSessionLabel(): void {
     this.broadcast({ type: "sessionLabel", label: this.sessionLabel() });
+  }
+
+  private adoptStoredLabel(): void {
+    // A resumed chat keeps its label; a chat already renamed or reset this
+    // boot keeps what it has.
+    if (this.labelSettled) {
+      return;
+    }
+    this.labelSettled = true;
+    const stored = cleanSessionLabel(this.storage.get<unknown>(SESSION_LABEL_KEY));
+    if (stored) {
+      this.sessionId = stored.id;
+      this.sessionTopic = stored.topic;
+      this.broadcastSessionLabel();
+    }
+  }
+
+  private persistSessionLabel(): void {
+    this.labelSettled = true;
+    this.storeSet(SESSION_LABEL_KEY, { id: this.sessionId, topic: this.sessionTopic });
   }
 
   private createHost(trustWorkspace: boolean): MuseHost {

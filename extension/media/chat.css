@@ -297,15 +297,3 @@ body {
   margin: 4px 0;
   padding-left: 20px;
 }
-
-#stub {
-  padding: 12px;
-}
-
-#stub p {
-  color: var(--vscode-descriptionForeground);
-}
-
-#stub .hint {
-  font-size: 0.9em;
-}
