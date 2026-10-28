@@ -22,13 +22,19 @@ Every workspace gets a `brain/` folder that Muse reads at the start of each sess
    7. Never edit files outside this workspace.
    <!-- meta-betta:end -->
    ```
-3. Run `ensureBrain` + `ensureFrontDoor` when the chat starts in a workspace (ask once first: "Can I add a small brain/ folder so I remember this project between sessions?" Yes / Not now; remember the answer in workspaceState).
+3. **Trust + brain setup card** (first time the chat opens in a workspace; remember the answer in workspaceState):
+   > "To remember you and this project, I need to **trust this folder** and add a small `brain/` folder to it. OK?" [Yes, set it up] [Not now]
+   - Yes → run `ensureBrain` + `ensureFrontDoor`, store `trusted: true` for this workspace, and (re)start the Muse host with `args: ["serve", "--trust-workspace"]`. **Without that flag Muse ignores AGENTS.md** (proven 28 Oct).
+   - Not now → keep working untrusted (host without the flag), and show a small "Turn on memory" link in the header to ask again later.
+   - **No folder open:** show "Pick where to keep your project and I'll set it up" [Choose folder…] → `showOpenDialog` (allow creating a new folder) → open it with `vscode.openFolder` → the card appears there.
+   - Only trust the workspace the user said yes to; never trust anything automatically.
 4. **Brain panel:** a second webview view `metaBetta.brain` ("Brain") under the chat in the same container. It shows each file as a card: title, last updated, the first ~6 lines (for project.md: the START HERE section). Click a card → open the file in the editor. Refresh when files change (FileSystemWatcher on `brain/**`).
 5. Tests for `ensureBrain` / `ensureFrontDoor` (create, don't overwrite, marker replacement).
 
 ## Done when
 - Build + tests pass.
-- F5 on a fresh folder → first message → asked about the brain folder → Yes → `brain/` + `AGENTS.md` appear → the Brain view shows five cards.
+- F5 on a fresh folder → the trust + brain card appears → Yes → `brain/` + `AGENTS.md` appear → the Brain view shows five cards → the host restarts with `--trust-workspace`.
+- F5 with no folder open → "Pick where to keep your project" → choose/create a folder → it opens and the card appears.
 - Next session, Muse's first reply starts with "Here's where we're up to:".
 
 ## Handover
