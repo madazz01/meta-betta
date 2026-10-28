@@ -13,7 +13,7 @@ mkdirSync(workspaceRoot, { recursive: true });
 const t0 = Date.now();
 const client = await MuseClient.spawn({
   museBin,
-  args: ["serve"],
+  args: ["serve", ...(process.env.MUSE_TRUST ? ["--trust-workspace"] : [])], // --trust-workspace: load the workspace's AGENTS.md/rules
   clientInfo: { name: "meta_betta_spike", version: "0.0.1" }, // must match ^[a-z0-9_]+$ (the SDK README's "my-app" would be rejected)
 });
 console.log(`[host up in ${Date.now() - t0} ms]`);

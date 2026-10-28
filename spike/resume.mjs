@@ -8,10 +8,16 @@ if (!sessionId) { console.error("usage: node resume.mjs <sessionId> [prompt]"); 
 
 const client = await MuseClient.spawn({
   museBin,
-  args: ["serve"],
+  args: ["serve", ...(process.env.MUSE_TRUST ? ["--trust-workspace"] : [])],
   clientInfo: { name: "meta_betta_spike", version: "0.0.1" },
 });
-const session = await client.resumeSession({ sessionId });
+// MUSE_ALLOW=1: approve each tool request with its first "allow"-like choice and log it (test only).
+const onApproval = process.env.MUSE_ALLOW ? async (req) => {
+  const c = req.availableChoices.find((x) => /allow|approve|yes/i.test(`${x.choiceId} ${x.label ?? ""}`)) ?? req.availableChoices[0];
+  console.log(`[approval: ${JSON.stringify(req).slice(0, 220)} -> ${c.choiceId}]`);
+  return { choiceId: c.choiceId };
+} : undefined;
+const session = await client.resumeSession({ sessionId, ...(onApproval ? { onApproval } : {}) });
 console.log(`[resumed ${session.sessionId}]`);
 
 const turn = await session.sendUserTurn({ input: [{ type: "text", text: prompt }] });
