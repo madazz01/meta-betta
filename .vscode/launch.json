@@ -5,7 +5,7 @@
       "name": "Run Meta Betta",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}/extension"],
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/extension", "${workspaceFolder}/sandbox"],
       "outFiles": ["${workspaceFolder}/extension/out/**/*.js"],
       "preLaunchTask": "${defaultBuildTask}"
     }
