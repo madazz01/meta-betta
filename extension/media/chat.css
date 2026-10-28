@@ -95,3 +95,92 @@ body {
 #send:hover {
   background-color: var(--vscode-button-hoverBackground);
 }
+
+.btn {
+  background-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.btn:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn.chosen {
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+.btn.small {
+  margin-left: 8px;
+  padding: 2px 10px;
+  font-size: 0.9em;
+}
+
+.thinking {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.thinking summary {
+  cursor: pointer;
+}
+
+.thinking-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
+}
+
+.tool {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.approval {
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background-color: var(--vscode-input-background);
+}
+
+.approval-title {
+  margin: 0 0 6px;
+}
+
+.approval pre {
+  margin: 0 0 8px;
+  padding: 6px;
+  border-radius: 4px;
+  background-color: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85em;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.approval-choices {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.notice {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  text-align: center;
+}
+
+.notice.error {
+  color: var(--vscode-errorForeground);
+}

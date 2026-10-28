@@ -8,27 +8,181 @@
   const statusEl = document.getElementById("status");
   const form = document.getElementById("composer");
   const input = document.getElementById("input");
+  const sendButton = document.getElementById("send");
+
+  let running = false;
+  const assistantEls = new Map();
+  const thinkingEls = new Map();
+  const toolEls = new Map();
+  const approvalEls = new Map();
+
+  function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function hideEmptyState() {
+    emptyStateEl.hidden = true;
+  }
 
   function setStatus(text) {
     statusEl.textContent = text;
   }
 
-  function addBubble(role, text) {
-    emptyStateEl.hidden = true;
+  function setRunning(next) {
+    running = next;
+    input.disabled = next;
+    sendButton.textContent = next ? "Stop" : "Send";
+    if (!next) {
+      input.focus();
+    }
+  }
+
+  function addUserBubble(text) {
+    hideEmptyState();
     const bubble = document.createElement("div");
-    bubble.className = "bubble " + role;
+    bubble.className = "bubble user";
     bubble.textContent = text;
     messagesEl.appendChild(bubble);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    scrollToBottom();
+  }
+
+  function upsertAssistant(id, text) {
+    hideEmptyState();
+    let bubble = assistantEls.get(id);
+    if (!bubble) {
+      bubble = document.createElement("div");
+      bubble.className = "bubble assistant";
+      messagesEl.appendChild(bubble);
+      assistantEls.set(id, bubble);
+    }
+    bubble.textContent = text;
+    scrollToBottom();
+  }
+
+  function upsertThinking(id, text) {
+    hideEmptyState();
+    let details = thinkingEls.get(id);
+    if (!details) {
+      details = document.createElement("details");
+      details.className = "thinking";
+      const summary = document.createElement("summary");
+      summary.textContent = "Thinking…";
+      const body = document.createElement("div");
+      body.className = "thinking-text";
+      details.appendChild(summary);
+      details.appendChild(body);
+      messagesEl.appendChild(details);
+      thinkingEls.set(id, details);
+    }
+    details.querySelector(".thinking-text").textContent = text;
+    scrollToBottom();
+  }
+
+  function upsertTool(id, text, done) {
+    hideEmptyState();
+    let row = toolEls.get(id);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "tool";
+      messagesEl.appendChild(row);
+      toolEls.set(id, row);
+    }
+    row.textContent = text;
+    row.classList.toggle("done", Boolean(done));
+    scrollToBottom();
+  }
+
+  function addApproval(message) {
+    hideEmptyState();
+    const card = document.createElement("div");
+    card.className = "approval";
+    const title = document.createElement("p");
+    title.className = "approval-title";
+    title.textContent = message.title;
+    card.appendChild(title);
+    if (typeof message.detail === "string" && message.detail) {
+      const detail = document.createElement("pre");
+      detail.textContent = message.detail;
+      card.appendChild(detail);
+    }
+    const choices = document.createElement("div");
+    choices.className = "approval-choices";
+    for (const choice of message.choices) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn";
+      button.textContent = choice.label;
+      button.addEventListener("click", () => {
+        vscode.postMessage({ type: "approve", id: message.id, choiceId: choice.id });
+        disableApproval(message.id, button);
+      });
+      choices.appendChild(button);
+    }
+    card.appendChild(choices);
+    messagesEl.appendChild(card);
+    approvalEls.set(message.id, card);
+    scrollToBottom();
+  }
+
+  function disableApproval(id, chosen) {
+    const card = approvalEls.get(id);
+    if (!card) {
+      return;
+    }
+    for (const button of card.querySelectorAll("button")) {
+      button.disabled = true;
+      if (button === chosen) {
+        button.classList.add("chosen");
+      }
+    }
+  }
+
+  function addNotice(message) {
+    hideEmptyState();
+    const notice = document.createElement("div");
+    notice.className = "notice" + (message.kind === "error" ? " error" : "");
+    const span = document.createElement("span");
+    span.textContent = message.text;
+    notice.appendChild(span);
+    if (typeof message.copy === "string" && message.copy) {
+      const copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.className = "btn small";
+      copyButton.textContent = "Copy";
+      copyButton.addEventListener("click", async () => {
+        await copyText(message.copy);
+        copyButton.textContent = "Copied";
+      });
+      notice.appendChild(copyButton);
+    }
+    messagesEl.appendChild(notice);
+    scrollToBottom();
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (error) {
+      const area = document.createElement("textarea");
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
   }
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (running) {
+      vscode.postMessage({ type: "stop" });
+      return;
+    }
     const text = input.value.trim();
     if (!text) {
       return;
     }
-    addBubble("user", text);
+    addUserBubble(text);
     input.value = "";
     setStatus("");
     vscode.postMessage({ type: "send", text });
@@ -46,11 +200,49 @@
     if (!message || typeof message !== "object") {
       return;
     }
-    if (message.type === "reply" && typeof message.text === "string") {
-      setStatus("");
-      addBubble("assistant", message.text);
-    } else if (message.type === "status" && typeof message.text === "string") {
-      setStatus(message.text);
+    switch (message.type) {
+      case "assistant":
+        if (typeof message.id === "string" && typeof message.text === "string") {
+          upsertAssistant(message.id, message.text);
+        }
+        break;
+      case "thinking":
+        if (typeof message.id === "string" && typeof message.text === "string") {
+          upsertThinking(message.id, message.text);
+        }
+        break;
+      case "tool":
+        if (typeof message.id === "string" && typeof message.text === "string") {
+          upsertTool(message.id, message.text, message.done);
+        }
+        break;
+      case "status":
+        if (typeof message.text === "string") {
+          setStatus(message.text);
+        }
+        break;
+      case "approval":
+        if (typeof message.id === "string" && typeof message.title === "string" && Array.isArray(message.choices)) {
+          addApproval(message);
+        }
+        break;
+      case "approvalDone":
+        if (typeof message.id === "string") {
+          disableApproval(message.id, undefined);
+        }
+        break;
+      case "notice":
+        if (typeof message.text === "string") {
+          addNotice(message);
+        }
+        break;
+      case "turn":
+        if (message.state === "started" || message.state === "done") {
+          setRunning(message.state === "started");
+        }
+        break;
+      default:
+        break;
     }
   });
 

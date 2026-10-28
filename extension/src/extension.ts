@@ -1,8 +1,10 @@
 import * as vscode from "vscode";
-import { ChatViewProvider } from "./chatView";
+import { ChatViewProvider } from "./chatView.js";
+
+let provider: ChatViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const provider = new ChatViewProvider(context.extensionUri);
+  provider = new ChatViewProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider),
     vscode.commands.registerCommand("metaBetta.open", async () => {
@@ -11,6 +13,10 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {
-  // Nothing to clean up yet.
+export function deactivate(): Promise<void> | void {
+  const current = provider;
+  provider = undefined;
+  if (current) {
+    return current.dispose();
+  }
 }

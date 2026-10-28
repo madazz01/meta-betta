@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appendMessage, canSend, formatEcho, parseSendMessage } from "../lib/chat";
-import { createNonce } from "../lib/nonce";
+import { appendMessage, canSend, formatEcho, parseSendMessage } from "../lib/chat.js";
+import { createNonce } from "../lib/nonce.js";
 
 describe("canSend", () => {
   it("accepts plain text", () => {

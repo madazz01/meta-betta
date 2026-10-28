@@ -40,6 +40,16 @@
           "name": "Chat"
         }
       ]
+    },
+    "configuration": {
+      "title": "Meta Betta",
+      "properties": {
+        "metaBetta.museBin": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Muse binary. Leave empty to find it automatically."
+        }
+      }
     }
   },
   "scripts": {
@@ -51,5 +61,8 @@
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "@muse-code/sdk": "1.4.14"
   }
 }
