@@ -6,7 +6,13 @@
 // below are erased at compile time.
 
 import { execFile } from "node:child_process";
-import type { FoldedItem, MuseClient, Session, Turn, TurnOutcome } from "@muse-code/sdk";
+import type {
+  ApprovalFailureHandler,
+  ApprovalHandler,
+  FoldedItem,
+  MuseClient,
+  TurnOutcome,
+} from "@muse-code/sdk";
 import type { ApprovalRequestParams, ItemDeltaParams } from "@muse-code/sdk/dist/src/msp.js";
 import { approvalCard, safestChoiceId } from "../lib/approvals.js";
 import { reasoningText, toolRowText } from "../lib/items.js";
@@ -44,6 +50,35 @@ export interface MuseHostOptions {
    * when the panel can't ask (closed) — the host then takes the safest choice.
    */
   askApproval: (card: ApprovalCardEvent) => Promise<string | undefined>;
+  /** Test seam: build the client instead of spawning `muse serve`. */
+  createHost?: () => Promise<{ client: HostClient; connection: HostConnection }>;
+}
+
+/** The slice of the SDK client MuseHost drives (real or fake). */
+export interface HostClient {
+  startSession(options: { workspaceRoot: string }): Promise<HostSession>;
+  close(): Promise<void>;
+}
+
+/** The slice of the SDK session MuseHost drives (real or fake). */
+export interface HostSession {
+  readonly sessionId: string;
+  sendUserTurn(options: { input: { type: "text"; text: string }[] }): Promise<HostTurn>;
+  onApproval(handler: ApprovalHandler): void;
+  onApprovalError(handler: ApprovalFailureHandler): void;
+}
+
+/** The slice of the SDK turn MuseHost drives (real or fake). */
+export interface HostTurn {
+  readonly turnId: string;
+  items(): AsyncIterableIterator<FoldedItem>;
+  deltas(): AsyncIterableIterator<ItemDeltaParams>;
+  readonly completed: Promise<TurnOutcome>;
+}
+
+/** The slice of the SDK connection MuseHost drives (real or fake). */
+export interface HostConnection {
+  command(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 interface TurnState {
@@ -69,8 +104,10 @@ function newTurnState(gen: number): TurnState {
 }
 
 export class MuseHost {
-  private client: MuseClient | undefined;
-  private session: Session | undefined;
+  private client: HostClient | undefined;
+  private session: HostSession | undefined;
+  private connection: HostConnection | undefined;
+  private currentTurnId: string | undefined;
   private starting: Promise<void> | undefined;
   /** Bumped by every send and every stop; older turns' late events are dropped. */
   private turnGen = 0;
@@ -93,7 +130,7 @@ export class MuseHost {
       return;
     }
     this.emit({ type: "status", text: "Muse is thinking…" });
-    let turn: Turn;
+    let turn: HostTurn;
     try {
       turn = await session.sendUserTurn({ input: [{ type: "text", text }] });
     } catch (error) {
@@ -104,28 +141,43 @@ export class MuseHost {
       });
       return;
     }
+    this.currentTurnId = turn.turnId;
+    if (!this.live(state)) {
+      // Stopped while submitting: interrupt the orphan so nothing runs unseen.
+      try {
+        await this.interruptTurn(turn.turnId);
+        if (this.currentTurnId === turn.turnId) {
+          this.currentTurnId = undefined;
+        }
+      } catch {
+        // Best effort; a later Stop retries while the id is still set.
+      }
+      return;
+    }
     await this.followTurn(turn, state);
   }
 
   /**
-   * Stop showing the current turn. SDK 1.4.14 exposes no turn/cancel verb —
-   * the connection is a private field on Session/MuseClient, so there is no
-   * supported way to send one — so this stops the panel (late events are
-   * dropped) while the server turn runs out in the background; a new message
-   * queues behind it.
+   * Interrupt the running turn on the server. The cancelled terminal reports
+   * "Stopped." through the normal completion path. Falls back to a panel-side
+   * stop when there is no running turn or the interrupt throws.
    */
-  public stop(): void {
-    this.turnGen += 1;
-    for (const finish of this.approvalWaiters) {
-      finish(undefined);
+  public async stop(): Promise<void> {
+    const turnId = this.currentTurnId;
+    if (!turnId) {
+      this.localStop();
+      return;
     }
-    this.emit({ type: "notice", kind: "info", text: "Stopped." });
-    this.emit({ type: "turn", state: "done" });
-    this.emit({ type: "status", text: "Ready" });
+    try {
+      await this.interruptTurn(turnId);
+    } catch {
+      this.localStop();
+    }
   }
 
   public async dispose(): Promise<void> {
     this.turnGen += 1;
+    this.currentTurnId = undefined;
     for (const finish of this.approvalWaiters) {
       finish(undefined);
     }
@@ -133,10 +185,32 @@ export class MuseHost {
     const client = this.client;
     this.client = undefined;
     this.session = undefined;
+    this.connection = undefined;
     this.starting = undefined;
     if (client) {
       await client.close();
     }
+  }
+
+  private async interruptTurn(turnId: string): Promise<void> {
+    const session = this.session;
+    const connection = this.connection;
+    if (!session || !connection) {
+      throw new Error("no live session");
+    }
+    await connection.command("turn/interrupt", { sessionId: session.sessionId, turnId });
+  }
+
+  /** Panel-side stop: drop late events and report "Stopped." at once. */
+  private localStop(): void {
+    this.turnGen += 1;
+    this.currentTurnId = undefined;
+    for (const finish of this.approvalWaiters) {
+      finish(undefined);
+    }
+    this.emit({ type: "notice", kind: "info", text: "Stopped." });
+    this.emit({ type: "turn", state: "done" });
+    this.emit({ type: "status", text: "Ready" });
   }
 
   private emit(event: MuseHostEvent): void {
@@ -159,29 +233,68 @@ export class MuseHost {
 
   private async start(workspaceRoot: string): Promise<void> {
     this.emit({ type: "status", text: "Starting Muse…" });
-    const { MuseClient } = await import("@muse-code/sdk");
-    let client: MuseClient;
-    try {
-      client = await MuseClient.spawn({
-        museBin: this.options.museBin,
-        args: ["serve"],
-        clientInfo: { name: "meta_betta", version: this.options.version },
-      });
-      this.session = await client.startSession({ workspaceRoot });
-    } catch (error) {
-      this.client = undefined;
-      this.session = undefined;
-      throw error;
+    let session: HostSession;
+    if (this.options.createHost) {
+      const built = await this.options.createHost();
+      session = await built.client.startSession({ workspaceRoot });
+      this.session = session;
+      this.client = built.client;
+      this.connection = built.connection;
+    } else {
+      session = await this.spawn(workspaceRoot);
     }
-    this.client = client;
-    this.session.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
-    this.session.onApprovalError(() => {
+    session.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
+    session.onApprovalError(() => {
       this.emit({
         type: "notice",
         kind: "error",
         text: "That permission request didn't go through. Try stopping the turn and asking again.",
       });
     });
+  }
+
+  /**
+   * The same steps MuseClient.spawn() takes, done manually so this host holds
+   * the connection (needed to interrupt a running turn). See spike/stop.mjs.
+   */
+  private async spawn(workspaceRoot: string): Promise<HostSession> {
+    const { MuseClient, spawnMspConnection, readSessionDurability } = await import("@muse-code/sdk");
+    const handshake = spawnMspConnection({ command: this.options.museBin, args: ["serve"] });
+    let client: MuseClient | undefined;
+    try {
+      const spawned = await handshake.initialize({
+        clientInfo: { name: "meta_betta", version: this.options.version },
+      });
+      client = new MuseClient(spawned.connection, {
+        durability: readSessionDurability(spawned.initializeResult),
+        host: spawned,
+      });
+      const session = await client.startSession({ workspaceRoot });
+      this.session = session;
+      this.client = client;
+      this.connection = spawned.connection;
+      return session;
+    } catch (error) {
+      if (client) {
+        await client.close().catch(() => undefined);
+      } else {
+        await handshake.close().catch(() => undefined);
+      }
+      this.client = undefined;
+      this.session = undefined;
+      this.connection = undefined;
+      // After teardown the exit is settled: when the spawn itself failed,
+      // throw its error (e.g. ENOENT) instead of the knock-on EPIPE, so the
+      // panel can show the right card.
+      const spawnError = await handshake.child.exit.then(
+        () => undefined,
+        (exitError: unknown) => exitError,
+      );
+      if (spawnError instanceof Error) {
+        throw spawnError;
+      }
+      throw error;
+    }
   }
 
   private decideApproval(request: ApprovalRequestParams): Promise<string> {
@@ -208,7 +321,7 @@ export class MuseHost {
     });
   }
 
-  private async followTurn(turn: Turn, state: TurnState): Promise<void> {
+  private async followTurn(turn: HostTurn, state: TurnState): Promise<void> {
     const itemsDone = (async () => {
       for await (const item of turn.items()) {
         if (!this.live(state)) {
@@ -374,6 +487,7 @@ export class MuseHost {
     if (gen !== this.turnGen) {
       return;
     }
+    this.currentTurnId = undefined;
     if (notice) {
       this.emit({ type: "notice", kind: notice.kind, text: notice.text });
     }
@@ -433,6 +547,8 @@ export class MuseHost {
     const client = this.client;
     this.client = undefined;
     this.session = undefined;
+    this.connection = undefined;
+    this.currentTurnId = undefined;
     if (client) {
       void client.close().catch(() => undefined);
     }

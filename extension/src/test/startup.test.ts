@@ -40,6 +40,15 @@ describe("classifySpawnError", () => {
     assert.equal(classifySpawnError(error), "login");
   });
 
+  it("looks through cause chains (the manual spawn path wraps errors)", () => {
+    const missing = new Error("handshake failed", {
+      cause: Object.assign(new Error("spawn muse ENOENT"), { code: "ENOENT" }),
+    });
+    assert.equal(classifySpawnError(missing), "missing");
+    const login = new Error("host exited", { cause: new Error("not logged in") });
+    assert.equal(classifySpawnError(login), "login");
+  });
+
   it("calls everything else other", () => {
     assert.equal(classifySpawnError(new Error("connection reset")), "other");
     assert.equal(classifySpawnError(undefined), "other");

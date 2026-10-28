@@ -77,7 +77,7 @@ export class ChatController {
   }
 
   public stop(): void {
-    this.host?.stop();
+    void this.host?.stop();
   }
 
   public approve(id: string, choiceId: string): void {
