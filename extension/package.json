@@ -36,6 +36,7 @@
       "metaBetta": [
         {
           "id": "metaBetta.chat",
+          "type": "webview",
           "name": "Chat"
         }
       ]
