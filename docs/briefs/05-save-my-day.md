@@ -21,10 +21,12 @@ One button that makes Muse write down what happened, so tomorrow starts where to
 4. When the turn completes, flash the Brain panel cards that changed and show "Saved ✓ — see you tomorrow" in the chat.
 5. **Periodic quick save:** while the user is active, do a quiet quick save every 45 minutes or every 15 turns, whichever comes first (setting `metaBetta.autoSaveMinutes`, 0 = off). A quick save sends a shorter turn: update the START HERE section of brain/project.md and append to today's log, only inside brain/, reply with just "Saved ✓". Show it as a small "Saved ✓ 2:15pm" note in the status line, not a chat bubble. Never quick-save in the middle of a running turn; wait until it finishes.
 6. Optional (only if trivial): if the workspace is a git repo, offer "Also commit the brain?" → `git add brain && git commit -m "Save my day <date>"`. Never push.
+7. **Backup copy:** setting `metaBetta.backupFolder` (empty = off). After every Save my day and quick save, the extension itself (not Muse) copies `brain/` to `<backupFolder>/<workspace folder name>/brain/`, overwriting the old copy. Point it at a Google Drive / OneDrive / Dropbox folder and the user's sync app puts it in the cloud for free. Show "Backed up ✓" next to "Saved ✓". If the folder is missing or not writable, say so in one plain line and carry on; never block the save.
 
 ## Done when
 - Build + tests pass (test the "is this path inside brain/" check, including tricky paths like `brain/../x`).
 - With `metaBetta.autoSaveMinutes` set to 1 for testing, a quick save happens after a minute of chatting and shows "Saved ✓ <time>" in the status line.
+- With `metaBetta.backupFolder` set to a test folder, a save leaves an up-to-date copy of brain/ there (test the copy with a temp folder).
 - After a short session, Save my day updates project.md's START HERE + today's log, and a new session opens with the right "Here's where we're up to".
 
 ## Handover

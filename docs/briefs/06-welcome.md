@@ -12,7 +12,7 @@ The first time someone opens Meta Betta in a workspace with an empty brain, a **
    - **What are we doing?** "What are we working on in this folder?" (a line or two is plenty) → writes the START HERE section of `brain/project.md`, then plays it back in one line.
    - **How I remember: ONE short message**, roughly:
      > "Quick one on how I remember: notes on you and this project live in `brain/` (the Brain panel; edit anything). I quick-save as we go, and 💾 **Save my day** writes up where we're up to. Close everything whenever; next time I start with 'Here's where we're up to'."
-     A small "How does this work?" link under it expands a few more lines for anyone curious.
+     A small "How does this work?" link under it expands a few more lines for anyone curious. Those lines must include, plainly: "Your brain is stored in this project, on your machine, and it's yours: easy to find, share, move or back up (set a backup folder in Settings). I read it each session so I can help, and on a contributor model Meta may use what I read, so keep passwords and keys out of it."
    - **Finish:** "What's first?" → normal chat from here.
 3. While the memory message shows, the panel briefly outlines the Brain panel and the 💾 button.
 4. Plain, friendly, brief. No over-explaining.
