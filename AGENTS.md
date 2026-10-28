@@ -78,7 +78,7 @@ Created in the user's workspace at `brain/`:
 | File | Purpose |
 |---|---|
 | `brain/me.md` | Who the user is, how they like to be talked to (short vs full, plain words…) |
-| `brain/project.md` | What they're building + a **START HERE** section at the top: where we're up to, next step |
+| `brain/project.md` | What they're building (a short **START HERE** at the top) + **Updates**: dated entries, one per save, each tagged with its chat's session label. The brain only grows: entries are added, never overwritten |
 | `brain/tricks.md` | Workarounds that worked, one per line, newest first |
 | `brain/good-for.md` | Plain-English list of what Muse has actually done for this user |
 | `brain/log/YYYY-MM-DD.md` | What happened today |
