@@ -73,4 +73,4 @@ The workspace `AGENTS.md` (front door) tells Muse: read the brain at the start, 
 
 ## Build order (briefs in `docs/briefs/`)
 
-01 extension skeleton + chat panel (echo) → 02 wire chat to Muse Code → 03 resume + new session → 04 brain folder + brain panel → 05 Save my day + periodic quick saves → 06 welcome (name, what we're doing, 3-part memory tour) → 07 plain handovers + "did you know I can also…".
+01 extension skeleton + chat panel (echo) → 02 wire chat to Muse Code → 03 resume + new session → 04 brain folder + brain panel → 05 Save my day + periodic quick saves → 06 welcome (name, what we're doing, 3-part memory tour) → 07 plain handovers + "did you know I can also…" → 08 slash commands (/usage, /resume, /model, /compact, /recap, /save …) + status-bar usage.
