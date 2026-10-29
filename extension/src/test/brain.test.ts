@@ -429,6 +429,30 @@ describe("welcome filing", () => {
     assert.equal(welcomeName("call me Al"), "Al");
   });
 
+  it("strips greetings and loose lead-ins", () => {
+    assert.equal(welcomeName("hi im Bryan"), "Bryan");
+    assert.equal(welcomeName("hey it's bryan"), "Bryan");
+    assert.equal(welcomeName("g'day, call me Bry"), "Bry");
+    assert.equal(welcomeName("Bryan here"), "Bryan");
+    assert.equal(welcomeName("bryan"), "Bryan");
+    assert.equal(welcomeName("Hi! I'm Ana."), "Ana");
+  });
+
+  it("never files a greeting or a dangling lead-in", () => {
+    assert.equal(welcomeName("hi"), undefined);
+    assert.equal(welcomeName("hello there"), undefined);
+    assert.equal(welcomeName("good morning"), undefined);
+    assert.equal(welcomeName("I'm here"), undefined);
+    assert.equal(welcomeName("call me"), undefined);
+  });
+
+  it("never files a polite dodge", () => {
+    assert.equal(welcomeName("I'm good"), undefined);
+    assert.equal(welcomeName("I'm fine thanks"), undefined);
+    assert.equal(welcomeName("Bryan, thanks!"), "Bryan");
+    assert.equal(welcomeName("good morning, I'm Ana"), "Ana");
+  });
+
   it("leaves refusals and rambles alone", () => {
     assert.equal(welcomeName("no thanks"), undefined);
     assert.equal(welcomeName("I'd rather not say"), undefined);

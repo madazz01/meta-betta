@@ -203,26 +203,67 @@ export function withStartHere(content: string, body: string): string {
   return [...lines.slice(0, start), "## START HERE", "", trimmed, "", ...after].join("\n");
 }
 
+const WELCOME_REFUSALS =
+  /^(?:no\b|nope|nah\b|skip\b|pass\b|none\b|rather\s+not|prefer\s+not|do\s+not\s+call\s+me|don't\s+call\s+me)/i;
+const WELCOME_GREETING = /^(?:hi|hey|hello|g['’]?day|good|morning|afternoon|evening|yo)\b[,\s]*/i;
+const WELCOME_TRAILER = /(?:^|\s+)(?:here|there|thanks|thank you|thx|ty)[.?…!]*$/i;
+const WELCOME_LEAD_IN_WORDS = "my name is|i'm|i’m|i am|im|it's|it’s|its|call me|name's|name’s|names";
+const WELCOME_SKIP_WORDS =
+  "a|an|the|me|you|he|she|it|we|they|us|them|him|her|his|hers|this|that|here|there" +
+  "|good|fine|ok|okay|great|well";
+const WELCOME_LEAD_INS = new RegExp(`\\b(?:${WELCOME_LEAD_IN_WORDS})\\s+([A-Za-z][A-Za-z'-]*)`, "gi");
+const WELCOME_SKIP = new RegExp(`^(?:${WELCOME_SKIP_WORDS})$`, "i");
+const WELCOME_NOTHING = new RegExp(
+  `^(?:${WELCOME_LEAD_IN_WORDS}|thanks|thank you|thx|ty|${WELCOME_SKIP_WORDS}|h+i+|hey+|hello+|y+o+)\\.?$`,
+  "i",
+);
+
 /**
- * A name from a welcome answer: "I'm Bryan" patterns first, else a short
- * bare answer ("Bryan", "Bob Smith"). Refusals and rambles give undefined.
+ * A name from a welcome answer: greetings stripped ("hi im Bryan"),
+ * "I'm/it's/call me/…" lead-ins accepted, else a short bare answer
+ * ("Bryan", "Bob Smith"). Once a lead-in matches, the name comes from it
+ * or nowhere ("I'm good" is not a name called Good). Refusals and
+ * rambles give undefined.
  */
 export function welcomeName(text: string): string | undefined {
   const clean = text.replace(/\s+/g, " ").trim();
-  if (
-    /^(?:no\b|nope|nah\b|skip\b|pass\b|none\b|rather\s+not|prefer\s+not|do\s+not\s+call\s+me|don't\s+call\s+me)/i.test(
-      clean,
-    )
-  ) {
+  if (WELCOME_REFUSALS.test(clean)) {
     return undefined;
   }
-  const known = greetingName(clean);
-  if (known) {
-    return known;
+  let stripped = clean;
+  for (;;) {
+    const next = stripped
+      .replace(WELCOME_GREETING, "")
+      .replace(WELCOME_TRAILER, "")
+      .replace(/^[^A-Za-z0-9]+/, "")
+      .trim();
+    if (next === stripped) {
+      break;
+    }
+    stripped = next;
   }
-  const bare = clean.replace(/[.?…!]+$/, "").trim();
+  if (stripped === "") {
+    return undefined;
+  }
+  const matches = [...stripped.matchAll(WELCOME_LEAD_INS)];
+  if (matches.length > 0) {
+    for (const match of matches) {
+      const word = match[1] ?? "";
+      if (!WELCOME_SKIP.test(word)) {
+        return word.charAt(0).toUpperCase() + word.slice(1);
+      }
+    }
+    return undefined;
+  }
+  const bare = stripped.replace(/[.?…!,)]+$/, "").trim();
   const words = bare.split(" ").filter((word) => word !== "");
-  if (words.length >= 1 && words.length <= 3 && bare.length <= 40 && /[A-Za-z]/.test(bare)) {
+  if (
+    words.length >= 1 &&
+    words.length <= 3 &&
+    bare.length <= 40 &&
+    /[A-Za-z]/.test(bare) &&
+    !WELCOME_NOTHING.test(bare)
+  ) {
     return bare.charAt(0).toUpperCase() + bare.slice(1);
   }
   return undefined;

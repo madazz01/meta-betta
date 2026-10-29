@@ -259,7 +259,8 @@ export class ChatController {
       this.sessionTopic = continued;
       this.persistSessionLabel();
       this.broadcastSessionLabel();
-    } else if (!this.sessionTopic) {
+    } else if (!this.sessionTopic && !this.welcomeStep) {
+      // During the welcome the topic comes from the project answer instead.
       const topic = topicFromFirstMessage(text);
       if (topic) {
         this.sessionTopic = topic;
@@ -297,6 +298,14 @@ export class ChatController {
       this.welcomeStep = "project";
     } else if (this.welcomeStep === "project") {
       await this.fileWelcomeProject(folder, text);
+      if (!this.sessionTopic) {
+        const topic = topicFromFirstMessage(text);
+        if (topic) {
+          this.sessionTopic = topic;
+          this.persistSessionLabel();
+          this.broadcastSessionLabel();
+        }
+      }
       this.welcomeStep = "memory";
     }
     this.pendingBefore = await this.takeBeforeSnapshot(folder);
