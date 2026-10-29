@@ -220,6 +220,15 @@ describe("session labels", () => {
     assert.equal(topicFromFirstMessage("x".repeat(100)).length, 40);
   });
 
+  it("skips greeting-only messages, waiting for the first real one", () => {
+    for (const greeting of ["hi", "Hi!", "hey", "hello", "g'day", "good morning", "morning", "yo"]) {
+      assert.equal(topicFromFirstMessage(greeting), "");
+    }
+    assert.equal(topicFromFirstMessage("Hi, fix the login page crash"), "Hi, fix the login page crash");
+    assert.equal(topicFromFirstMessage("Hello world program"), "Hello world program");
+    assert.equal(topicFromFirstMessage("Good news: tests pass"), "Good news: tests pass");
+  });
+
   it("cleans rename input", () => {
     assert.equal(cleanTopic("  my  topic "), "my topic");
     assert.equal(cleanTopic(""), "");

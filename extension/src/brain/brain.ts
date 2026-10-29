@@ -354,12 +354,36 @@ export function continuedTopic(text: string): string | undefined {
 
 /**
  * The chat's topic from its first message: "continue working on X" names X,
- * otherwise the first line, bounded.
+ * otherwise the first line, bounded. A bare greeting ("hi") is no topic:
+ * returning "" leaves the label untitled until the first real message.
  */
 export function topicFromFirstMessage(text: string): string {
-  return (
-    continuedTopic(text) ?? text.replace(/\s+/g, " ").trim().replace(/[.?…]+$/, "").slice(0, TOPIC_LIMIT)
-  );
+  const continued = continuedTopic(text);
+  if (continued !== undefined) {
+    return continued;
+  }
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean !== "" && isGreetingOnly(clean)) {
+    return "";
+  }
+  return clean.replace(/[.?…]+$/, "").slice(0, TOPIC_LIMIT);
+}
+
+/** True when nothing is left after the welcome's greetings are stripped. */
+function isGreetingOnly(clean: string): boolean {
+  let rest = clean;
+  for (;;) {
+    const next = rest
+      .replace(WELCOME_GREETING, "")
+      .replace(/^[^A-Za-z0-9]+/, "")
+      .replace(/[^A-Za-z0-9]+$/, "")
+      .trim();
+    if (next === rest) {
+      break;
+    }
+    rest = next;
+  }
+  return rest === "";
 }
 
 /** `Session 7f3a · login page`, or `Session 7f3a` before the topic is known. */

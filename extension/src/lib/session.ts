@@ -134,6 +134,47 @@ export function dividerBefore(prevAt: number | undefined, at: number): string | 
   return undefined;
 }
 
+/** A chat message: live ones are stamped at creation, replays keep theirs. */
+export interface ChatUserMessage {
+  type: "user";
+  text: string;
+  at?: number;
+  time?: string;
+}
+
+/** A chat reply: live ones are stamped at creation, replays keep theirs. */
+export interface ChatAssistantMessage {
+  type: "assistant";
+  id: string;
+  text: string;
+  at?: number;
+  time?: string;
+}
+
+export type ChatMessageEvent = ChatUserMessage | ChatAssistantMessage;
+
+/**
+ * Derive a message's display time from its recorded stamp. A message with no
+ * recorded time (from before times existed) shows no time, never "now".
+ */
+export function stampMessageTime(event: ChatMessageEvent): ChatMessageEvent {
+  if (event.at === undefined) {
+    return event;
+  }
+  return { ...event, time: timeLabel(event.at) };
+}
+
+/** A streaming update keeps the message's original time. */
+export function keepMessageTime(
+  previous: ChatMessageEvent | undefined,
+  next: ChatMessageEvent,
+): ChatMessageEvent {
+  if (previous?.at === undefined) {
+    return next;
+  }
+  return { ...next, at: previous.at, time: previous.time ?? timeLabel(previous.at) };
+}
+
 export interface StoredUndoFile {
   path: string;
   change: "modified" | "added" | "deleted";

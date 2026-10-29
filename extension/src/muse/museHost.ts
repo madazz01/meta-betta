@@ -516,7 +516,7 @@ export class MuseHost {
             state.settled.add(item.itemId);
           }
           state.assistant.set(item.itemId, text);
-          this.emit({ type: "assistant", id: item.itemId, text });
+          this.emit({ type: "assistant", id: item.itemId, text, at: Date.now() });
         }
         return;
       }
@@ -591,7 +591,7 @@ export class MuseHost {
     if (kind === "agentMessage" && field === "text") {
       const text = (state.assistant.get(delta.itemId) ?? "") + delta.delta;
       state.assistant.set(delta.itemId, text);
-      this.emit({ type: "assistant", id: delta.itemId, text });
+      this.emit({ type: "assistant", id: delta.itemId, text, at: Date.now() });
     } else if (kind === "reasoning" && field.startsWith("summary")) {
       const text = (state.thinking.get(delta.itemId) ?? "") + delta.delta;
       state.thinking.set(delta.itemId, text);

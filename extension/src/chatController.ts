@@ -9,8 +9,11 @@ import {
   cleanTranscript,
   cleanUndos,
   dividerBefore,
-  timeLabel,
+  keepMessageTime,
+  stampMessageTime,
   UndoReplayer,
+  type ChatAssistantMessage,
+  type ChatUserMessage,
   type StoredUndo,
 } from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
@@ -68,8 +71,8 @@ export interface SavedSection {
 }
 
 type TranscriptEvent =
-  | { type: "user"; text: string; at?: number; time?: string }
-  | { type: "assistant"; id: string; text: string; at?: number; time?: string }
+  | ChatUserMessage
+  | ChatAssistantMessage
   | { type: "thinking"; id: string; text: string }
   | { type: "tool"; id: string; text: string; done: boolean }
   | ApprovalCardEvent
@@ -291,7 +294,7 @@ export class ChatController {
     // Recorded only once the turn will actually run: a failed send never
     // reaches the server, and a ghost user message would skew the undo
     // anchors on resume.
-    this.recordAndBroadcast({ type: "user", text });
+    this.recordAndBroadcast({ type: "user", text, at: Date.now() });
     this.storeSet(LAST_MESSAGE_KEY, Date.now());
     if (this.welcomeStep === "hello" && !this.welcomeHeard) {
       // The hello never arrived (failed or stopped): cancel rather than
@@ -408,7 +411,7 @@ export class ChatController {
     this.storeSet(WELCOMED_KEY, true);
     this.broadcast({ type: "welcomeSkip", show: false });
     this.recordAndBroadcast({ type: "memory", text: WELCOME_MEMORY_TEXT, detail: WELCOME_MEMORY_DETAIL });
-    this.recordAndBroadcast({ type: "assistant", id: "welcome-next", text: "What's first?" });
+    this.recordAndBroadcast({ type: "assistant", id: "welcome-next", text: "What's first?", at: Date.now() });
     this.onWelcomeOutline();
   }
 
@@ -1418,8 +1421,10 @@ export class ChatController {
   }
 
   private recordAndBroadcast(event: TranscriptEvent): void {
-    // Messages carry their time; resumed ones keep their recorded stamp.
-    const stamped = stampTime(event);
+    // Messages carry their time; resumed ones keep their recorded stamp, and
+    // ones with no stamp show no time.
+    const stamped =
+      event.type === "user" || event.type === "assistant" ? stampMessageTime(event) : event;
     // Streaming updates replace their earlier self, so history stays compact
     // and a replay shows each bubble once, in its final state.
     const upsertId =
@@ -1432,7 +1437,11 @@ export class ChatController {
       );
       if (index >= 0) {
         // A stream chunk never moves the message's time.
-        this.history[index] = keepTime(this.history[index], stamped);
+        const prev = this.history[index];
+        this.history[index] =
+          stamped.type === "assistant" && prev?.type === "assistant"
+            ? keepMessageTime(prev, stamped)
+            : stamped;
         this.broadcast(this.history[index]);
         return;
       }
@@ -1539,27 +1548,6 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-/** Stamp a message with its time, keeping a recorded stamp when it has one. */
-function stampTime(event: TranscriptEvent): TranscriptEvent {
-  if (event.type !== "user" && event.type !== "assistant") {
-    return event;
-  }
-  const at = event.at ?? Date.now();
-  return { ...event, at, time: timeLabel(at) };
-}
-
-/** A streaming update keeps the message's original time. */
-function keepTime(previous: TranscriptEvent | undefined, next: TranscriptEvent): TranscriptEvent {
-  if (
-    (previous?.type === "user" || previous?.type === "assistant") &&
-    previous.at !== undefined &&
-    (next.type === "user" || next.type === "assistant")
-  ) {
-    return { ...next, at: previous.at, time: previous.time ?? timeLabel(previous.at) };
-  }
-  return next;
 }
 
 /** "1 file" or "3 files". */

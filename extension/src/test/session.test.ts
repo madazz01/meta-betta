@@ -7,7 +7,9 @@ import {
   dayLabel,
   decideSession,
   dividerBefore,
+  keepMessageTime,
   sameDay,
+  stampMessageTime,
   timeLabel,
   UndoReplayer,
 } from "../lib/session.js";
@@ -122,6 +124,43 @@ describe("message times", () => {
     assert.equal(dividerBefore(thu, thuLate), undefined);
     assert.equal(dividerBefore(thuLate, fri), "Fri 30 Oct");
     assert.equal(dividerBefore(fri, week), "Thu 5 Nov");
+  });
+});
+
+describe("message time stamping", () => {
+  it("keeps a recorded stamp and derives its time", () => {
+    const at = new Date(2026, 9, 29, 9, 41).getTime();
+    assert.deepEqual(stampMessageTime({ type: "user", text: "hi", at }), {
+      type: "user",
+      text: "hi",
+      at,
+      time: "9:41 AM",
+    });
+  });
+
+  it("shows no time when no time was recorded", () => {
+    assert.deepEqual(stampMessageTime({ type: "assistant", id: "a1", text: "hello" }), {
+      type: "assistant",
+      id: "a1",
+      text: "hello",
+    });
+  });
+
+  it("keeps the original time across stream chunks", () => {
+    const first = stampMessageTime({ type: "assistant", id: "a1", text: "hel", at: 1000 });
+    assert.equal(first.time, timeLabel(1000));
+    assert.deepEqual(keepMessageTime(first, { type: "assistant", id: "a1", text: "hello", at: 2000 }), {
+      type: "assistant",
+      id: "a1",
+      text: "hello",
+      at: 1000,
+      time: timeLabel(1000),
+    });
+    assert.deepEqual(keepMessageTime(undefined, { type: "assistant", id: "a1", text: "hello" }), {
+      type: "assistant",
+      id: "a1",
+      text: "hello",
+    });
   });
 });
 
