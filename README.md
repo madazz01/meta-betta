@@ -1,6 +1,6 @@
-# Meta Betta — the dev's assistant
+# Meta Betta — we just made it play nice
 
-**Coffee and Muse. New mornings without the restarts.**
+**Coffee and Muse. New mornings without the restarts.** Start the day with a colleague, not a tool.
 
 A friendly workmate for Meta's Muse Code: a chat panel in VS Code, with a brain folder that remembers you and your project, so every session starts where you left off.
 
