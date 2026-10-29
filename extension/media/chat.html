@@ -11,9 +11,14 @@
   <main id="chat">
     <header id="topbar">
       <button id="session-label" class="label-btn" type="button" title="Rename this chat">…</button>
-      <button id="new-chat" class="icon-btn" type="button" title="New chat">+</button>
-      <button id="save-day" class="icon-btn" type="button" title="Save my day: write what happened into the brain">💾</button>
-      <button id="undo-last" class="icon-btn" type="button" title="Nothing to undo" disabled>↩</button>
+      <button id="save-day" class="header-btn" type="button" title="Write what happened into the brain">Save my day</button>
+      <button id="undo-last" class="header-btn" type="button" title="Nothing to undo" disabled>↩ Undo</button>
+      <button id="new-chat" class="header-btn" type="button" title="Start a new chat">New chat</button>
+      <span class="header-divider" aria-hidden="true"></span>
+      <button id="header-goal" class="header-btn" type="button" title="Pin a goal for this chat, with a progress bar">Goal</button>
+      <button id="header-side" class="header-btn" type="button" title="Ask something off-topic without muddling the main job">Side question</button>
+      <button id="header-fork" class="header-btn" type="button" title="Try another way from here, keeping this chat">Fork</button>
+      <button id="header-usage" class="header-btn" type="button" title="See what this chat is costing">Usage</button>
       <button id="skip-welcome" class="btn small" type="button" hidden>Skip</button>
     </header>
     <div id="goal" hidden></div>

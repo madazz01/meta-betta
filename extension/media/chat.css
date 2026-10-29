@@ -24,13 +24,10 @@ body {
 #topbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 2px 2px 8px;
   border-bottom: 1px solid var(--vscode-widget-border);
-}
-
-#new-chat {
-  margin-left: auto;
 }
 
 .label-btn {
@@ -48,24 +45,33 @@ body {
   text-decoration: underline;
 }
 
-.icon-btn {
-  background: none;
+.header-btn {
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
   border: none;
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 3px 10px;
   font: inherit;
-  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  line-height: 1.4;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.icon-btn:hover:not(:disabled) {
-  color: var(--vscode-foreground);
-  background-color: var(--vscode-list-hoverBackground, var(--vscode-editor-background));
+.header-btn:hover:not(:disabled) {
+  background-color: var(--vscode-button-secondaryHoverBackground);
 }
 
-.icon-btn:disabled {
-  opacity: 0.4;
+.header-btn:disabled {
+  opacity: 0.5;
   cursor: default;
+}
+
+.header-divider {
+  width: 1px;
+  align-self: stretch;
+  background-color: var(--vscode-widget-border);
+  margin: 2px 0;
 }
 
 #no-folder {

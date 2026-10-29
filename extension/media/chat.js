@@ -14,6 +14,10 @@
   const undoLastButton = document.getElementById("undo-last");
   const skipWelcomeButton = document.getElementById("skip-welcome");
   const sessionLabelButton = document.getElementById("session-label");
+  const headerGoalButton = document.getElementById("header-goal");
+  const headerSideButton = document.getElementById("header-side");
+  const headerForkButton = document.getElementById("header-fork");
+  const headerUsageButton = document.getElementById("header-usage");
   const noFolderEl = document.getElementById("no-folder");
   const openFolderButton = document.getElementById("open-folder");
   const goalEl = document.getElementById("goal");
@@ -862,6 +866,22 @@
 
   undoLastButton.addEventListener("click", () => {
     vscode.postMessage({ type: "undoLast" });
+  });
+
+  headerGoalButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "goalAsk" });
+  });
+
+  headerSideButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "sideBox" });
+  });
+
+  headerForkButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "forkNow" });
+  });
+
+  headerUsageButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "usageNow" });
   });
 
   skipWelcomeButton.addEventListener("click", () => {
