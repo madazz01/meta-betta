@@ -7,6 +7,7 @@ import { ChatViewProvider, readOpenIn } from "./chatView.js";
 let controller: ChatController | undefined;
 let viewProvider: ChatViewProvider | undefined;
 let brainProvider: BrainViewProvider | undefined;
+let brainSideProvider: BrainViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   controller = new ChatController(context.extensionUri, context.workspaceState);
@@ -16,6 +17,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
   brainProvider = new BrainViewProvider(context.extensionUri);
+  brainSideProvider = new BrainViewProvider(context.extensionUri);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, viewProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -23,6 +25,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(BrainViewProvider.viewType, brainProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
+    vscode.window.registerWebviewViewProvider(
+      BrainViewProvider.sideViewType,
+      brainSideProvider,
+      {
+        webviewOptions: { retainContextWhenHidden: true },
+      },
+    ),
     vscode.commands.registerCommand("metaBetta.open", async () => {
       if (readOpenIn() === "sidebar") {
         await vscode.commands.executeCommand("metaBetta.chat.focus");
@@ -41,6 +50,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       controller?.refreshFolder();
       void brainProvider?.refresh();
+      void brainSideProvider?.refresh();
     }),
   );
 }
@@ -50,6 +60,7 @@ export function deactivate(): Promise<void> | void {
   controller = undefined;
   viewProvider = undefined;
   brainProvider = undefined;
+  brainSideProvider = undefined;
   if (current) {
     return current.dispose();
   }

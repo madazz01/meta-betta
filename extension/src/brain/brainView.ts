@@ -4,6 +4,7 @@ import { brainCardInputs, buildBrainCards, ensureBrain, nodeBrainFs } from "./br
 
 export class BrainViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "metaBetta.brain";
+  public static readonly sideViewType = "metaBetta.brainSidebar";
 
   private view?: vscode.WebviewView;
   private watcher?: vscode.FileSystemWatcher;

@@ -15,6 +15,7 @@ import {
   ensureBrain,
   ensureFrontDoor,
   formatSessionLabel,
+  needsCatchUp,
   nodeBrainFs,
   todayLogFile,
   topicFromFirstMessage,
@@ -41,6 +42,7 @@ const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
 const SESSION_LABEL_KEY = "metaBetta.sessionLabel";
 const TRANSCRIPT_KEY = "metaBetta.transcript";
+const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
 
 /**
  * Owns the Muse session and the chat history. Every attached surface shows
@@ -57,6 +59,7 @@ export class ChatController {
   private memoryAnnounced = false;
   private memoryOn = false;
   private liveReplySeen = false;
+  private forceCatchUp = false;
   private sessionId = createSessionId();
   private sessionTopic = "";
   private labelSettled = false;
@@ -167,6 +170,7 @@ export class ChatController {
       }
     }
     this.recordAndBroadcast({ type: "user", text });
+    this.storeSet(LAST_MESSAGE_KEY, Date.now());
     let host: MuseHost;
     try {
       host = await this.ensureHost(folder);
@@ -188,6 +192,14 @@ export class ChatController {
   private async withBackground(folder: vscode.WorkspaceFolder, text: string): Promise<string> {
     if (!this.memoryOn || this.liveReplySeen) {
       return text;
+    }
+    if (this.forceCatchUp) {
+      this.forceCatchUp = false;
+    } else {
+      const afterHours = vscode.workspace.getConfiguration("metaBetta").get<number>("catchUpAfterHours", 4);
+      if (!needsCatchUp(this.storage.get<number>(LAST_MESSAGE_KEY), Date.now(), afterHours)) {
+        return text;
+      }
     }
     const root = folder.uri.fsPath;
     const [me, project, tricks, todayLog] = await Promise.all([
@@ -241,6 +253,8 @@ export class ChatController {
     }
     this.history = [];
     this.storeSet(TRANSCRIPT_KEY, undefined);
+    this.storeSet(LAST_MESSAGE_KEY, undefined);
+    this.forceCatchUp = true;
     this.running = false;
     this.lastStatus = "";
     this.liveReplySeen = false;
@@ -415,6 +429,7 @@ export class ChatController {
         clear: () => {
           this.storeSet(SESSION_ID_KEY, undefined);
           this.storeSet(TRANSCRIPT_KEY, undefined);
+          this.storeSet(LAST_MESSAGE_KEY, undefined);
         },
       },
     });

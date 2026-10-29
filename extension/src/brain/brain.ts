@@ -440,6 +440,33 @@ export function greetingName(meMd: string | undefined): string | undefined {
   return undefined;
 }
 
+/**
+ * Whether a resumed chat earns the quiet start: yes when the last message is
+ * from an earlier day or older than afterHours, or when we don't know.
+ */
+export function needsCatchUp(
+  lastMessageMs: number | undefined,
+  nowMs: number,
+  afterHours: number,
+): boolean {
+  if (lastMessageMs === undefined) {
+    return true;
+  }
+  if (lastMessageMs > nowMs) {
+    return false;
+  }
+  const last = new Date(lastMessageMs);
+  const now = new Date(nowMs);
+  const sameDay =
+    last.getFullYear() === now.getFullYear() &&
+    last.getMonth() === now.getMonth() &&
+    last.getDate() === now.getDate();
+  if (!sameDay) {
+    return true;
+  }
+  return nowMs - lastMessageMs > Math.max(0, afterHours) * 3_600_000;
+}
+
 /** "Good morning Bryan, hold on a sec while I catch up…" for the placeholder. */
 export function catchUpGreeting(now: Date, meMd: string | undefined): string {
   const hour = now.getHours();

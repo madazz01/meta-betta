@@ -18,6 +18,7 @@ import {
   formatUpdated,
   FRONT_DOOR_SECTION,
   greetingName,
+  needsCatchUp,
   startHereSection,
   stripBackgroundPrefix,
   todayLogFile,
@@ -383,6 +384,33 @@ describe("catchUpGreeting", () => {
       catchUpGreeting(new Date(2026, 9, 28, 9, 0), undefined),
       "Good morning, hold on a sec while I catch up…",
     );
+  });
+});
+
+describe("needsCatchUp", () => {
+  const noon = new Date(2026, 9, 28, 12, 0).getTime();
+  const hour = 3_600_000;
+
+  it("catches up after an earlier day or more than 4 hours", () => {
+    assert.equal(needsCatchUp(new Date(2026, 9, 27, 23, 0).getTime(), noon, 4), true);
+    assert.equal(needsCatchUp(noon - 4 * hour - 1, noon, 4), true);
+    assert.equal(needsCatchUp(noon - 4 * hour, noon, 4), false);
+    assert.equal(needsCatchUp(noon - 60_000, noon, 4), false);
+  });
+
+  it("catches up across midnight even within the hours", () => {
+    const halfPastMidnight = new Date(2026, 9, 28, 0, 30).getTime();
+    assert.equal(needsCatchUp(new Date(2026, 9, 27, 23, 45).getTime(), halfPastMidnight, 4), true);
+  });
+
+  it("honours the setting", () => {
+    assert.equal(needsCatchUp(noon - 2 * hour, noon, 1), true);
+    assert.equal(needsCatchUp(noon - 2 * hour, noon, 8), false);
+  });
+
+  it("catches up when unknown, never for the future", () => {
+    assert.equal(needsCatchUp(undefined, noon, 4), true);
+    assert.equal(needsCatchUp(noon + hour, noon, 4), false);
   });
 });
 

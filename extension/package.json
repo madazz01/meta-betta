@@ -14,6 +14,7 @@
   "activationEvents": [
     "onView:metaBetta.chat",
     "onView:metaBetta.brain",
+    "onView:metaBetta.brainSidebar",
     "onCommand:metaBetta.open"
   ],
   "capabilities": {
@@ -45,6 +46,11 @@
           "id": "metaBetta.chat",
           "type": "webview",
           "name": "Chat"
+        },
+        {
+          "id": "metaBetta.brainSidebar",
+          "type": "webview",
+          "name": "Brain"
         }
       ],
       "explorer": [
@@ -73,6 +79,12 @@
           "type": "boolean",
           "default": true,
           "description": "Remember this folder in brain/ files that Muse reads every session. Needs a trusted folder."
+        },
+        "metaBetta.catchUpAfterHours": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "description": "Catch up with a brain summary when the last message is older than this many hours (or from an earlier day)."
         }
       }
     }
