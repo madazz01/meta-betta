@@ -40,6 +40,8 @@ Full feature inventory with "when it helps": [`docs/muse-features.md`](../muse-f
 
 7. **Quick-action buttons (Bryan's top five, 29 Oct):** the most useful commands get buttons, not just slash commands. Undo is already in the header. Add a slim row of chips just above the message box: `🎯 Goal` · `💬 Side question` · `🔀 Fork` · `📊 Usage`, each with a plain-words tooltip (e.g. "Ask something off-topic without muddling the main job"). Goal → asks for the goal, then pins the goal card (Build 6). Side question → opens a small side box; the answer appears there, main chat untouched (`session/sideChat`). Fork → "Try another way from here" (`session/fork`), also offered on each message. Usage → the /usage card. Keep the row compact; it must not crowd the input on a narrow sidebar (collapse to icons only when narrow).
 
+8. **Tips for the new buttons (nudges.ts):** add nudge ideas for Goal, Fork and Usage pointing at the new chips (Bryan's top five are undo, usage, side question, goal, fork: keep those five first in the list). Point the side-question tip at the 💬 chip. Remove the "voice note (Alt+V in the Muse terminal)" tip: there's no terminal in Meta Betta; bring it back only if a 🎤 button is added.
+
 ## Done when
 - Build + tests pass.
 - `/` opens the menu; `/usage` shows real numbers after a turn; `/model` switches and the next turn uses the new model; `/resume` lists earlier sessions and switching works; `/compact` and `/recap` respond sensibly; unknown commands give the friendly message.
