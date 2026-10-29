@@ -428,3 +428,227 @@ body {
   gap: 6px;
   margin-top: 6px;
 }
+
+#chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85em;
+}
+
+.chip:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+@media (max-width: 420px) {
+  .chip-label {
+    display: none;
+  }
+}
+
+#slash-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  padding: 4px;
+  background-color: var(--vscode-input-background);
+}
+
+#slash-menu[hidden] {
+  display: none;
+}
+
+.slash-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--vscode-foreground);
+  text-align: left;
+}
+
+.slash-item.selected {
+  background-color: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.slash-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.slash-desc {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slash-item.selected .slash-desc {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.card {
+  align-self: flex-start;
+  max-width: 85%;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background-color: var(--vscode-input-background);
+}
+
+.card-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.card-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.card-body p {
+  margin: 0 0 6px;
+}
+
+.card-body p:last-child {
+  margin-bottom: 0;
+}
+
+.card-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.card-input {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.card-input input {
+  flex: 1;
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+}
+
+#goal {
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background-color: var(--vscode-input-background);
+}
+
+#goal[hidden] {
+  display: none;
+}
+
+.goal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.goal-name {
+  font-weight: 600;
+}
+
+.goal-percent {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.goal-bar {
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--vscode-progressBar-background);
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.goal-fill {
+  height: 100%;
+  background-color: var(--vscode-progressBar-foreground);
+}
+
+.goal-sub {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  margin-top: 4px;
+}
+
+.goal-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+#effort {
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 4px;
+  padding: 0 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#effort:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.bubble.assistant .msg-meta .msg-time {
+  margin-top: 0;
+}
+
+.fork-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75em;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+}
+
+.fork-btn:hover {
+  opacity: 1;
+  text-decoration: underline;
+}

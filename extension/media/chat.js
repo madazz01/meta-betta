@@ -16,6 +16,9 @@
   const sessionLabelButton = document.getElementById("session-label");
   const noFolderEl = document.getElementById("no-folder");
   const openFolderButton = document.getElementById("open-folder");
+  const goalEl = document.getElementById("goal");
+  const slashMenuEl = document.getElementById("slash-menu");
+  const effortButton = document.getElementById("effort");
 
   let running = false;
   let catchingUpEl = null;
@@ -25,6 +28,11 @@
   const approvalEls = new Map();
   const undoEls = new Map();
   const nudgeEls = new Map();
+  const cardEls = new Map();
+  let slashList = [];
+  let slashOpen = false;
+  let slashIndex = 0;
+  let slashQuery = "";
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -115,10 +123,22 @@
       bubble.className = "bubble assistant";
       const body = document.createElement("div");
       body.className = "assistant-text";
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
       const clock = document.createElement("div");
       clock.className = "msg-time";
+      const fork = document.createElement("button");
+      fork.type = "button";
+      fork.className = "fork-btn";
+      fork.textContent = "🔀 Try another way";
+      fork.title = "Try another way from here";
+      fork.addEventListener("click", () => {
+        vscode.postMessage({ type: "forkMessage", id });
+      });
+      meta.appendChild(clock);
+      meta.appendChild(fork);
       bubble.appendChild(body);
-      bubble.appendChild(clock);
+      bubble.appendChild(meta);
       messagesEl.appendChild(bubble);
       assistantEls.set(id, bubble);
     }
@@ -209,6 +229,198 @@
     divider.textContent = `── ${label} ──`;
     messagesEl.appendChild(divider);
     scrollToBottom();
+  }
+
+  function renderCard(message) {
+    hideEmptyState();
+    let card = cardEls.get(message.id);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "card";
+      messagesEl.appendChild(card);
+      cardEls.set(message.id, card);
+    }
+    card.replaceChildren();
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = message.title;
+    const body = document.createElement("div");
+    body.className = "card-body";
+    body.innerHTML = renderReply(message.body);
+    card.appendChild(title);
+    card.appendChild(body);
+    if (Array.isArray(message.buttons) && message.buttons.length > 0) {
+      const row = document.createElement("div");
+      row.className = "card-buttons";
+      for (const button of message.buttons) {
+        if (!button || typeof button.id !== "string" || typeof button.label !== "string") {
+          continue;
+        }
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = "btn";
+        el.textContent = button.label;
+        el.addEventListener("click", () => {
+          vscode.postMessage({ type: "cardButton", cardId: message.id, buttonId: button.id });
+          disableCard(message.id);
+        });
+        row.appendChild(el);
+      }
+      card.appendChild(row);
+    }
+    const spec = message.input;
+    if (spec && typeof spec.id === "string" && typeof spec.placeholder === "string") {
+      const formEl = document.createElement("form");
+      formEl.className = "card-input";
+      const field = document.createElement("input");
+      field.type = "text";
+      field.placeholder = spec.placeholder;
+      field.setAttribute("aria-label", spec.placeholder);
+      const go = document.createElement("button");
+      go.type = "submit";
+      go.className = "btn";
+      go.textContent = typeof spec.buttonLabel === "string" ? spec.buttonLabel : "Send";
+      formEl.appendChild(field);
+      formEl.appendChild(go);
+      formEl.addEventListener("submit", (event) => {
+        event.preventDefault();
+        vscode.postMessage({ type: "cardInput", cardId: message.id, inputId: spec.id, text: field.value });
+        field.value = "";
+      });
+      card.appendChild(formEl);
+    }
+    scrollToBottom();
+  }
+
+  function disableCard(id) {
+    const card = cardEls.get(id);
+    if (!card) {
+      return;
+    }
+    for (const el of card.querySelectorAll("button, input")) {
+      el.disabled = true;
+    }
+  }
+
+  function renderGoal(goal) {
+    goalEl.replaceChildren();
+    if (
+      !goal ||
+      typeof goal.objective !== "string" ||
+      typeof goal.percentComplete !== "number" ||
+      typeof goal.status !== "string"
+    ) {
+      goalEl.hidden = true;
+      return;
+    }
+    goalEl.hidden = false;
+    const percent = Math.min(100, Math.max(0, Math.round(goal.percentComplete)));
+    const head = document.createElement("div");
+    head.className = "goal-head";
+    const name = document.createElement("span");
+    name.className = "goal-name";
+    name.textContent = `🎯 ${goal.objective}`;
+    const pct = document.createElement("span");
+    pct.className = "goal-percent";
+    pct.textContent = `${percent}% · ${goal.status}`;
+    head.appendChild(name);
+    head.appendChild(pct);
+    const bar = document.createElement("div");
+    bar.className = "goal-bar";
+    const fill = document.createElement("div");
+    fill.className = "goal-fill";
+    fill.style.width = `${percent}%`;
+    bar.appendChild(fill);
+    goalEl.appendChild(head);
+    goalEl.appendChild(bar);
+    const flow = [goal.currentWork, goal.nextWork].filter(
+      (part) => typeof part === "string" && part.trim() !== "",
+    );
+    if (flow.length > 0) {
+      const sub = document.createElement("div");
+      sub.className = "goal-sub";
+      sub.textContent = flow.join(" · ");
+      goalEl.appendChild(sub);
+    }
+    const row = document.createElement("div");
+    row.className = "goal-buttons";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "btn small";
+    const paused = goal.status === "paused";
+    toggle.textContent = paused ? "Resume" : "Pause";
+    toggle.addEventListener("click", () => {
+      vscode.postMessage({ type: "goalAction", action: paused ? "resume" : "pause" });
+    });
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "btn small";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => {
+      vscode.postMessage({ type: "goalAction", action: "clear" });
+    });
+    row.appendChild(toggle);
+    row.appendChild(clear);
+    goalEl.appendChild(row);
+  }
+
+  function updateEffort(level) {
+    const labels = { quick: "Quick", normal: "Normal", deep: "Deep" };
+    const label = labels[level] || "Normal";
+    effortButton.textContent = `⚡ ${label}`;
+    effortButton.title = `Thinking effort: ${label} — click to change`;
+  }
+
+  function closeSlashMenu() {
+    slashOpen = false;
+    slashMenuEl.hidden = true;
+  }
+
+  function slashMatches(query) {
+    return slashList.filter((def) => def.name.startsWith(query));
+  }
+
+  function updateSlashMenu() {
+    const value = input.value;
+    if (!value.startsWith("/") || value.includes("\n")) {
+      closeSlashMenu();
+      return;
+    }
+    const query = value.slice(1).trim().toLowerCase();
+    if (query !== slashQuery) {
+      slashQuery = query;
+      slashIndex = 0;
+    }
+    const matches = slashMatches(query);
+    if (matches.length === 0) {
+      closeSlashMenu();
+      return;
+    }
+    slashOpen = true;
+    slashIndex = Math.min(slashIndex, matches.length - 1);
+    slashMenuEl.replaceChildren();
+    matches.forEach((def, index) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "slash-item" + (index === slashIndex ? " selected" : "");
+      const name = document.createElement("span");
+      name.className = "slash-name";
+      name.textContent = `/${def.name}`;
+      const desc = document.createElement("span");
+      desc.className = "slash-desc";
+      desc.textContent = def.description;
+      item.appendChild(name);
+      item.appendChild(desc);
+      item.addEventListener("click", () => completeSlash(def.name));
+      slashMenuEl.appendChild(item);
+    });
+    slashMenuEl.hidden = false;
+  }
+
+  function completeSlash(name) {
+    input.value = `/${name} `;
+    closeSlashMenu();
+    input.focus();
   }
 
   function upsertThinking(id, text) {
@@ -444,6 +656,7 @@
     approvalEls.clear();
     undoEls.clear();
     nudgeEls.clear();
+    cardEls.clear();
     emptyStateEl.hidden = false;
     setStatus("");
     setRunning(false);
@@ -473,6 +686,25 @@
     vscode.postMessage({ type: "openFolder" });
   });
 
+  document.querySelectorAll("#chips .chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const kind = chip.getAttribute("data-chip");
+      if (kind === "goal") {
+        vscode.postMessage({ type: "goalAsk" });
+      } else if (kind === "side") {
+        vscode.postMessage({ type: "sideBox" });
+      } else if (kind === "fork") {
+        vscode.postMessage({ type: "forkNow" });
+      } else if (kind === "usage") {
+        vscode.postMessage({ type: "usageNow" });
+      }
+    });
+  });
+
+  effortButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "effortCycle" });
+  });
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (running) {
@@ -485,7 +717,12 @@
     }
     input.value = "";
     setStatus("");
+    closeSlashMenu();
     vscode.postMessage({ type: "send", text });
+  });
+
+  input.addEventListener("input", () => {
+    updateSlashMenu();
   });
 
   messagesEl.addEventListener("click", (event) => {
@@ -498,6 +735,32 @@
   });
 
   input.addEventListener("keydown", (event) => {
+    if (slashOpen && (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === "Escape")) {
+      const matches = slashMatches(slashQuery);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        slashIndex = (slashIndex + 1) % matches.length;
+        updateSlashMenu();
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        slashIndex = (slashIndex + matches.length - 1) % matches.length;
+        updateSlashMenu();
+        return;
+      }
+      const match = matches[slashIndex];
+      if (match) {
+        event.preventDefault();
+        completeSlash(match.name);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       form.requestSubmit();
@@ -531,6 +794,35 @@
           (message.answer === "show" || message.answer === "notnow")
         ) {
           disableNudge(message.id, message.answer);
+        }
+        break;
+      case "card":
+        if (
+          typeof message.id === "string" &&
+          typeof message.title === "string" &&
+          typeof message.body === "string"
+        ) {
+          renderCard(message);
+        }
+        break;
+      case "cardDone":
+        if (typeof message.id === "string") {
+          disableCard(message.id);
+        }
+        break;
+      case "goal":
+        renderGoal(message.goal);
+        break;
+      case "effort":
+        if (typeof message.level === "string") {
+          updateEffort(message.level);
+        }
+        break;
+      case "slashCommands":
+        if (Array.isArray(message.commands)) {
+          slashList = message.commands.filter(
+            (def) => def && typeof def.name === "string" && typeof def.description === "string",
+          );
         }
         break;
       case "thinking":

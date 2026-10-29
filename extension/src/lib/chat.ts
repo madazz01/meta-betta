@@ -69,3 +69,56 @@ export function parseNudgeAnswer(value: unknown): NudgeAnswer | undefined {
   }
   return { id, answer, thing: (thing ?? "").trim() };
 }
+
+export interface CardButtonPress {
+  cardId: string;
+  buttonId: string;
+}
+
+/** Validate a result-card button press from the panel. */
+export function parseCardButton(value: unknown): CardButtonPress | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const { type, cardId, buttonId } = value as { type?: unknown; cardId?: unknown; buttonId?: unknown };
+  if (
+    type !== "cardButton" ||
+    typeof cardId !== "string" ||
+    cardId === "" ||
+    typeof buttonId !== "string" ||
+    buttonId === ""
+  ) {
+    return undefined;
+  }
+  return { cardId, buttonId };
+}
+
+export interface CardInputAnswer {
+  cardId: string;
+  inputId: string;
+  text: string;
+}
+
+/** Validate a result-card input answer from the panel. */
+export function parseCardInput(value: unknown): CardInputAnswer | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const { type, cardId, inputId, text } = value as {
+    type?: unknown;
+    cardId?: unknown;
+    inputId?: unknown;
+    text?: unknown;
+  };
+  if (
+    type !== "cardInput" ||
+    typeof cardId !== "string" ||
+    cardId === "" ||
+    typeof inputId !== "string" ||
+    inputId === "" ||
+    typeof text !== "string"
+  ) {
+    return undefined;
+  }
+  return { cardId, inputId, text };
+}

@@ -1,6 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appendMessage, canSend, formatEcho, parseNudgeAnswer, parseSendMessage } from "../lib/chat.js";
+import {
+  appendMessage,
+  canSend,
+  formatEcho,
+  parseCardButton,
+  parseCardInput,
+  parseNudgeAnswer,
+  parseSendMessage,
+} from "../lib/chat.js";
 import { createNonce } from "../lib/nonce.js";
 
 describe("canSend", () => {
@@ -75,6 +83,27 @@ describe("parseNudgeAnswer", () => {
     assert.equal(parseNudgeAnswer({ type: "nudgeAnswer", id: "", answer: "show" }), undefined);
     assert.equal(parseNudgeAnswer({ type: "nudgeAnswer", answer: "show" }), undefined);
     assert.equal(parseNudgeAnswer({ type: "nudgeAnswer", id: "a1", answer: "show", thing: 42 }), undefined);
+  });
+});
+
+describe("card messages", () => {
+  it("accepts button and input answers", () => {
+    assert.deepEqual(parseCardButton({ type: "cardButton", cardId: "card-1", buttonId: "m-2" }), {
+      cardId: "card-1",
+      buttonId: "m-2",
+    });
+    assert.deepEqual(
+      parseCardInput({ type: "cardInput", cardId: "card-1", inputId: "q", text: "Why?" }),
+      { cardId: "card-1", inputId: "q", text: "Why?" },
+    );
+  });
+
+  it("rejects other shapes", () => {
+    assert.equal(parseCardButton(undefined), undefined);
+    assert.equal(parseCardButton({ type: "cardButton", cardId: "", buttonId: "x" }), undefined);
+    assert.equal(parseCardButton({ type: "cardButton", cardId: "c", buttonId: 42 }), undefined);
+    assert.equal(parseCardInput({ type: "cardInput", cardId: "c", inputId: "q" }), undefined);
+    assert.equal(parseCardInput({ type: "cardInput", cardId: "c", inputId: "", text: "x" }), undefined);
   });
 });
 

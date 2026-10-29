@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { FoldedItem, TurnOutcome } from "@muse-code/sdk";
+import type { Notification } from "@muse-code/sdk/dist/src/msp.js";
 import {
   MuseHost,
   type HostClient,
@@ -155,6 +156,325 @@ function toolTexts(events: MuseHostEvent[]): string[] {
   return events.filter((event) => event.type === "tool").map((event) => event.text);
 }
 
+interface ScriptedFake {
+  host: MuseHost;
+  events: MuseHostEvent[];
+  requests: { method: string; params: Record<string, unknown> | undefined }[];
+  commands: { method: string; params: Record<string, unknown> }[];
+  emit(notification: { method: string; params?: Record<string, unknown> }): void;
+}
+
+/** Scripted request/command results plus a notification feed. */
+function fakeCommands(options: {
+  requests?: Record<string, Record<string, unknown>>;
+  commands?: Record<string, Record<string, unknown>>;
+  sessions?: Record<string, HostSession>;
+}): ScriptedFake {
+  const events: MuseHostEvent[] = [];
+  const requests: ScriptedFake["requests"] = [];
+  const commands: ScriptedFake["commands"] = [];
+  let notify: ((notification: Notification) => void) | undefined;
+  const mainSession: HostSession = {
+    sessionId: "session-1",
+    sendUserTurn: async () => cannedTurn([]),
+    onApproval: () => undefined,
+    onApprovalError: () => undefined,
+    fold: { items: { list: () => [] } },
+  };
+  const sessionFor = (sessionId: string): HostSession => options.sessions?.[sessionId] ?? mainSession;
+  const client: HostClient = {
+    startSession: async () => mainSession,
+    resumeSession: async ({ sessionId }) => sessionFor(sessionId),
+    close: async () => undefined,
+  };
+  const connection: HostConnection = {
+    command: async (method, params) => {
+      commands.push({ method, params });
+      return options.commands?.[method] ?? { status: "accepted", commandId: "cmd-1" };
+    },
+    request: async (method, params) => {
+      requests.push({ method, params });
+      return options.requests?.[method] ?? {};
+    },
+    onNotification: (handler) => {
+      notify = handler;
+    },
+  };
+  return {
+    host: new MuseHost({
+      museBin: "unused",
+      version: "0.0.1",
+      trustWorkspace: false,
+      emit: (event) => {
+        events.push(event);
+      },
+      askApproval: () => Promise.resolve(undefined),
+      createHost: async () => ({ client, connection }),
+    }),
+    events,
+    requests,
+    commands,
+    emit: (notification) => notify?.({ jsonrpc: "2.0", ...notification }),
+  };
+}
+
+function cannedTurn(items: FoldedItem[], terminal = "completed"): HostTurn {
+  return {
+    turnId: "turn-1",
+    items: async function* () {
+      yield* items;
+    },
+    deltas: async function* () {},
+    completed: Promise.resolve(terminalOutcome(terminal)),
+  };
+}
+
+function historySession(sessionId: string, history: FoldedItem[]): HostSession {
+  return {
+    sessionId,
+    sendUserTurn: async () => cannedTurn([]),
+    onApproval: () => undefined,
+    onApprovalError: () => undefined,
+    fold: { items: { list: () => history } },
+  };
+}
+
+describe("slash notifications", () => {
+  it("routes usage, goal, model and effort to events", async () => {
+    const fake = fakeCommands({});
+    await fake.host.prepare(process.cwd());
+    fake.emit({
+      method: "session/tokenUsage",
+      params: {
+        sessionId: "session-1",
+        cumulative: {
+          promptTokens: 100,
+          outputTokens: 50,
+          totalTokens: 150,
+          cost: { usd: 0.02, partial: true },
+        },
+      },
+    });
+    fake.emit({ method: "session/tokenUsage", params: { sessionId: "other", cumulative: {} } });
+    fake.emit({
+      method: "session/goalChanged",
+      params: {
+        sessionId: "session-1",
+        goal: { objective: "Ship it", percentComplete: 45, status: "active", currentWork: "Tests" },
+      },
+    });
+    fake.emit({ method: "session/modelChanged", params: { sessionId: "session-1", modelId: "m-2" } });
+    fake.emit({
+      method: "session/reasoningEffortChanged",
+      params: { sessionId: "session-1", reasoningEffort: "high" },
+    });
+    fake.emit({
+      method: "session/reasoningEffortChanged",
+      params: { sessionId: "session-1", reasoningEffort: "bogus" },
+    });
+    assert.deepEqual(
+      fake.events.filter((event) => event.type === "usage"),
+      [
+        {
+          type: "usage",
+          usage: { promptTokens: 100, outputTokens: 50, totalTokens: 150, usd: 0.02, partial: true },
+        },
+      ],
+    );
+    assert.deepEqual(
+      fake.events.filter((event) => event.type === "goal"),
+      [
+        {
+          type: "goal",
+          goal: { objective: "Ship it", percentComplete: 45, status: "active", currentWork: "Tests" },
+        },
+      ],
+    );
+    assert.deepEqual(
+      fake.events.filter((event) => event.type === "model" || event.type === "effort"),
+      [
+        { type: "model", modelId: "m-2" },
+        { type: "effort", level: "deep" },
+      ],
+    );
+    await fake.host.dispose();
+  });
+
+  it("clears the goal on null, ignores malformed payloads", async () => {
+    const fake = fakeCommands({});
+    await fake.host.prepare(process.cwd());
+    fake.emit({ method: "session/goalChanged", params: { sessionId: "session-1", goal: null } });
+    fake.emit({ method: "session/goalChanged", params: { sessionId: "session-1", goal: { nope: true } } });
+    fake.emit({ method: "session/goalChanged", params: { sessionId: "session-1" } });
+    assert.deepEqual(
+      fake.events.filter((event) => event.type === "goal"),
+      [{ type: "goal", goal: null }],
+    );
+    await fake.host.dispose();
+  });
+
+  it("recaps through recap/completed, matched by command id", async () => {
+    const fake = fakeCommands({ commands: { "recap/request": { commandId: "cmd-9", status: "accepted" } } });
+    const pending = fake.host.recap(process.cwd());
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.emit({ method: "recap/completed", params: { commandId: "cmd-other", outcome: "completed", text: "Wrong" } });
+    fake.emit({
+      method: "recap/completed",
+      params: { commandId: "cmd-9", outcome: "completed", text: "We shipped.", title: "Shipped" },
+    });
+    assert.deepEqual(await pending, { text: "We shipped.", title: "Shipped" });
+    await fake.host.dispose();
+  });
+
+  it("fails a recap plainly when the side-call fails", async () => {
+    const fake = fakeCommands({ commands: { "recap/request": { commandId: "cmd-9", status: "accepted" } } });
+    const pending = fake.host.recap(process.cwd());
+    await new Promise((resolve) => setImmediate(resolve));
+    fake.emit({ method: "recap/completed", params: { commandId: "cmd-9", outcome: "failed" } });
+    await assert.rejects(pending, /didn't come back/);
+    await fake.host.dispose();
+  });
+});
+
+describe("slash commands", () => {
+  it("lists sessions, models, tasks, skills and plugins defensively", async () => {
+    const fake = fakeCommands({
+      requests: {
+        "session/list": {
+          sessions: [
+            { sessionId: "session-1", name: "Live one", updatedAt: "2026-10-30T09:00:00Z", turnCount: 5 },
+            { sessionId: "s2", name: "Old one", updatedAt: "2026-10-29T09:00:00Z", turnCount: 12 },
+            { nope: true },
+          ],
+        },
+        "model/list": {
+          models: [
+            { modelId: "m-1", displayLabel: "Spark", isActive: true },
+            { nope: true },
+          ],
+        },
+        "task/list": {
+          tasks: [
+            { taskId: "t1", tool: "npm test", executionMode: "background", startedAt: "2026-10-30T09:00:00Z" },
+            { taskId: "t2", kind: "workflow" },
+          ],
+        },
+        "skill/list": { skills: [{ selector: "fix-bug", displayName: "Fix bug", description: "Fixes." }] },
+        "plugin/list": { plugins: [{ id: "acme", version: "1.2", enabled: true }] },
+        "usage/read": { usage: { window: { resetsAtMs: 123 } } },
+      },
+    });
+    assert.deepEqual(await fake.host.listSessions(process.cwd()), [
+      { id: "s2", name: "Old one", updatedAt: "2026-10-29T09:00:00Z", turnCount: 12 },
+    ]);
+    assert.deepEqual(await fake.host.listModels(process.cwd()), [
+      { modelId: "m-1", label: "Spark", active: true },
+    ]);
+    const tasks = await fake.host.listTasks(process.cwd());
+    assert.equal(tasks.length, 2);
+    assert.equal(tasks[0]?.label, "npm test");
+    assert.ok((tasks[0]?.detail ?? "").startsWith("background"));
+    assert.equal(tasks[1]?.label, "workflow");
+    assert.deepEqual(await fake.host.listSkills(process.cwd()), [
+      { selector: "fix-bug", name: "Fix bug", description: "Fixes." },
+    ]);
+    assert.deepEqual(await fake.host.listPlugins(process.cwd()), [{ id: "acme", version: "1.2", enabled: true }]);
+    assert.deepEqual(await fake.host.readSubscription(process.cwd()), { resetAtMs: 123 });
+    assert.deepEqual(
+      fake.requests.map((entry) => entry.method),
+      ["session/list", "model/list", "task/list", "skill/list", "plugin/list", "usage/read"],
+    );
+    await fake.host.dispose();
+  });
+
+  it("sends set, stop and install commands with the right shape", async () => {
+    const fake = fakeCommands({
+      commands: {
+        "session/compact": { status: "noop" },
+        "plugin/install": { status: "accepted", id: "acme", version: "1.2" },
+      },
+    });
+    await fake.host.setModel(process.cwd(), "m-2");
+    assert.deepEqual(fake.commands.at(-1), {
+      method: "session/setModel",
+      params: { sessionId: "session-1", model: { modelId: "m-2" } },
+    });
+    assert.equal(await fake.host.compact(process.cwd()), "noop");
+    await fake.host.goalCommand(process.cwd(), "set", "Ship it");
+    assert.deepEqual(fake.commands.at(-1), {
+      method: "goal/set",
+      params: { sessionId: "session-1", objective: "Ship it" },
+    });
+    await fake.host.goalCommand(process.cwd(), "pause");
+    assert.deepEqual(fake.commands.at(-1)?.params, { sessionId: "session-1" });
+    await fake.host.stopTask(process.cwd(), "t1");
+    await fake.host.stopAllTasks(process.cwd());
+    await fake.host.setSkill(process.cwd(), "fix-bug", false);
+    assert.deepEqual(fake.commands.at(-1), {
+      method: "skill/setActivation",
+      params: { sessionId: "session-1", selector: "fix-bug", scope: "project", activation: "off" },
+    });
+    assert.deepEqual(await fake.host.installPlugin(process.cwd(), { marketplace: "acme", name: "deploy" }), {
+      id: "acme",
+      version: "1.2",
+    });
+    await fake.host.setEffort(process.cwd(), "deep");
+    assert.deepEqual(fake.commands.at(-1), {
+      method: "session/setReasoningEffort",
+      params: { sessionId: "session-1", reasoningEffort: "high" },
+    });
+    await fake.host.dispose();
+  });
+
+  it("asks a side question without touching the main chat", async () => {
+    const fake = fakeCommands({
+      commands: { "session/sideChat": { session: { sessionId: "side-1" } } },
+      sessions: {
+        "side-1": {
+          sessionId: "side-1",
+          sendUserTurn: async () =>
+            cannedTurn([
+              { kind: "agentMessage", itemId: "a1", revision: 1, status: "completed", text: "First." },
+              { kind: "agentMessage", itemId: "a2", revision: 2, status: "completed", text: "Second." },
+            ]),
+          onApproval: () => undefined,
+          onApprovalError: () => undefined,
+          fold: { items: { list: () => [] } },
+        },
+      },
+    });
+    assert.equal(await fake.host.sideAsk(process.cwd(), "Why?"), "First.\n\nSecond.");
+    assert.ok(
+      fake.events.every(
+        (event) => event.type !== "assistant" && event.type !== "user",
+      ),
+    );
+    await fake.host.dispose();
+  });
+
+  it("forks and switches sessions", async () => {
+    const fake = fakeCommands({
+      commands: { "session/fork": { session: { sessionId: "fork-1" } } },
+      sessions: {
+        "target-1": historySession("target-1", [
+          { kind: "userMessage", itemId: "u1", revision: 1, status: "completed", text: "old question" },
+          { kind: "agentMessage", itemId: "a1", revision: 2, status: "completed", text: "old answer" },
+        ]),
+      },
+    });
+    assert.equal(await fake.host.forkSession(process.cwd()), "fork-1");
+    assert.equal(await fake.host.switchSession("target-1", process.cwd()), 2);
+    assert.deepEqual(
+      fake.events.filter((event) => event.type === "user" || event.type === "assistant"),
+      [
+        { type: "user", text: "old question" },
+        { type: "assistant", id: "a1", text: "old answer" },
+      ],
+    );
+    await fake.host.dispose();
+  });
+});
+
 describe("history times", () => {
   it("replays the recorded time with resumed messages", async () => {
     const fake = fakeStoredSession({
@@ -250,6 +570,8 @@ function fakeRunningTurn(
   };
   const connection: HostConnection = {
     command: async (method, params) => onCommand(method, params, fake),
+    request: async () => ({}),
+    onNotification: () => undefined,
   };
   const fake: FakeHost = {
     host: new MuseHost({
@@ -307,6 +629,8 @@ function fakeItemTurns(turnItems: FoldedItem[][]): ItemTurnsFake {
   };
   const connection: HostConnection = {
     command: async () => ({}),
+    request: async () => ({}),
+    onNotification: () => undefined,
   };
   return {
     host: new MuseHost({
@@ -383,6 +707,8 @@ function fakeStoredSession(options: {
       commands.push({ method, params });
       return {};
     },
+    request: async () => ({}),
+    onNotification: () => undefined,
   };
   return {
     host: new MuseHost({

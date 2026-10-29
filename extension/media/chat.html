@@ -16,14 +16,23 @@
       <button id="undo-last" class="btn small" type="button" title="Nothing to undo" disabled>↩ Undo</button>
       <button id="skip-welcome" class="btn small" type="button" hidden>Skip</button>
     </header>
+    <div id="goal" hidden></div>
     <div id="no-folder" hidden>
       <p>Open a folder to start</p>
       <button id="open-folder" class="btn" type="button">Open Folder…</button>
     </div>
     <div id="messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
     <p id="empty-state">Morning! What are we working on?</p>
+    <div id="chips">
+      <button class="chip" type="button" data-chip="goal" title="Pin a goal for this chat, with a progress bar">🎯 <span class="chip-label">Goal</span></button>
+      <button class="chip" type="button" data-chip="side" title="Ask something off-topic without muddling the main job">💬 <span class="chip-label">Side question</span></button>
+      <button class="chip" type="button" data-chip="fork" title="Try another way from here, keeping this chat">🔀 <span class="chip-label">Fork</span></button>
+      <button class="chip" type="button" data-chip="usage" title="See what this chat is costing">📊 <span class="chip-label">Usage</span></button>
+    </div>
+    <div id="slash-menu" hidden></div>
     <form id="composer">
       <textarea id="input" rows="2" placeholder="Type a message…" aria-label="Type a message"></textarea>
+      <button id="effort" type="button" title="Thinking effort: Normal — click to change">⚡ Normal</button>
       <button id="send" type="submit">Send</button>
     </form>
     <p id="status" aria-live="polite"></p>

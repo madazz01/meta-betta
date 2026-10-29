@@ -16,6 +16,22 @@ export const NUDGE_IDEAS: NudgeIdea[] = [
     when: "the first time a reply changes files, or when they say something broke",
   },
   {
+    thing: "show what this chat is costing (📊 Usage chip)",
+    when: "they wonder about cost or tokens",
+  },
+  {
+    thing: "answer a quick side question without losing our place (💬 chip)",
+    when: "they ask something off-topic in the middle of a job",
+  },
+  {
+    thing: "track a goal for this chat (🎯 Goal chip)",
+    when: "a job has a clear finish line",
+  },
+  {
+    thing: "try another approach without losing this one (🔀 Fork chip)",
+    when: "an approach isn't working and they want to try differently",
+  },
+  {
     thing: "split a big job across helpers (say 'use a workflow')",
     when: "a big job that splits up: an audit, a migration, a broad review",
   },
@@ -24,16 +40,8 @@ export const NUDGE_IDEAS: NudgeIdea[] = [
     when: "a long build or log is running",
   },
   {
-    thing: "answer a quick side question without losing our place",
-    when: "they ask something off-topic in the middle of a job",
-  },
-  {
     thing: "read a screenshot or photo",
     when: "they mention a screenshot, photo, or picture",
-  },
-  {
-    thing: "turn a voice note into a list (Alt+V in the Muse terminal)",
-    when: "typing it all out would be a chore",
   },
   {
     thing: "write tests for it",

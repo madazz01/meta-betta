@@ -1,8 +1,29 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { parseNudgeAnswer, parseSendMessage } from "./lib/chat.js";
+import {
+  cleanEffortLevel,
+  cleanGoalInfo,
+  commandErrorText,
+  findSlashCommand,
+  parsePluginSpec,
+  parseSlashCommand,
+  SLASH_COMMANDS,
+  unknownCommandText,
+  type CardHandlers,
+  type CardSpec,
+  type EffortLevel,
+  type GoalInfo,
+  type ModelRow,
+  type PluginRow,
+  type ResumeSession,
+  type SkillRow,
+  type SlashContext,
+  type TaskRow,
+} from "./commands/slash.js";
+import { parseCardButton, parseCardInput, parseNudgeAnswer, parseSendMessage } from "./lib/chat.js";
 import { parseFileLink } from "./lib/links.js";
 import {
   buildTranscript,
@@ -17,6 +38,15 @@ import {
   type StoredUndo,
 } from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
+import {
+  cleanDayUsage,
+  formatStatusBar,
+  recordDayUsage,
+  sumDayUsage,
+  todayKey,
+  type DayUsage,
+  type SessionUsageTotals,
+} from "./lib/usage.js";
 import {
   appendEntry,
   backupBrain,
@@ -42,6 +72,7 @@ import {
   topicFromFirstMessage,
   UnsafeBackupError,
   welcomeName,
+  withGoalLine,
   withNameLine,
   withNotInterested,
   withStartHere,
@@ -83,7 +114,9 @@ type TranscriptEvent =
   | { type: "undoDone"; id: string; state: "undone" | "ready" | "gone" }
   | { type: "memory"; text: string; detail: string }
   | { type: "day"; label: string }
-  | { type: "nudgeAnswered"; id: string; answer: "show" | "notnow" };
+  | { type: "nudgeAnswered"; id: string; answer: "show" | "notnow" }
+  | { type: "card"; id: string; title: string; body: string; buttons?: CardSpec["buttons"]; input?: CardSpec["input"] }
+  | { type: "cardDone"; id: string };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
@@ -93,6 +126,9 @@ const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
 const LIVE_LABELS_KEY = "metaBetta.liveLabels";
 const UNDOS_KEY = "metaBetta.undos";
 const WELCOMED_KEY = "metaBetta.welcomed";
+const GOAL_KEY = "metaBetta.goal";
+const EFFORT_KEY = "metaBetta.effort";
+const DAILY_USAGE_KEY = "metaBetta.dailyUsage";
 /** Heartbeat + quick-save check, every 10 seconds. */
 const TICK_MS = 10_000;
 /** A quick save also fires after this many turns, whatever the clock says. */
@@ -155,6 +191,12 @@ export class ChatController {
   private shadowCache: { folder: string; bin: string; shadow: ShadowSnapshots } | undefined;
   private readonly tickTimer: ReturnType<typeof setInterval>;
   private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
+  private cardCounter = 0;
+  private cardHandlers = new Map<string, CardHandlers>();
+  private lastUsage: SessionUsageTotals | undefined;
+  private lastGoal: GoalInfo | null = null;
+  private lastEffort: EffortLevel = "normal";
+  private switching = false;
   private readonly createHostShared = singleFlight((folder: vscode.WorkspaceFolder) =>
     this.createHostAsync(folder),
   );
@@ -166,7 +208,11 @@ export class ChatController {
     private readonly storageDir: string | undefined = undefined,
     private readonly logFn: (message: string) => void = () => undefined,
     private readonly onWelcomeOutline: () => void = () => undefined,
+    private readonly updateStatusBar: (text: string) => void = () => undefined,
+    private readonly globalState: vscode.Memento | undefined = undefined,
   ) {
+    this.lastGoal = cleanGoalInfo(this.storage.get<unknown>(GOAL_KEY));
+    this.lastEffort = cleanEffortLevel(this.storage.get<unknown>(EFFORT_KEY));
     this.heartbeat();
     this.tickTimer = setInterval(() => {
       this.heartbeat();
@@ -185,6 +231,12 @@ export class ChatController {
     sink.post({ type: "status", text: this.lastStatus });
     sink.post({ type: "sessionLabel", label: this.sessionLabel() });
     sink.post({ type: "welcomeSkip", show: this.welcomeStep !== undefined });
+    sink.post({
+      type: "slashCommands",
+      commands: SLASH_COMMANDS.map((def) => ({ name: def.name, description: def.description })),
+    });
+    sink.post({ type: "goal", goal: this.lastGoal });
+    sink.post({ type: "effort", level: this.lastEffort });
     void this.updateHeaderUndo();
     if (!vscode.workspace.workspaceFolders?.[0]) {
       sink.post({ type: "noFolder" });
@@ -259,6 +311,15 @@ export class ChatController {
     }
     // History first, so yesterday's messages stay above a fresh reply.
     await this.prepare();
+
+    const slash = parseSlashCommand(text);
+    if (slash) {
+      this.recordAndBroadcast({ type: "user", text, at: Date.now() });
+      this.storeSet(LAST_MESSAGE_KEY, Date.now());
+      await this.dispatchSlash(slash.name, slash.args);
+      return;
+    }
+
     // "continue working on X" always starts a newly labelled episode, even
     // mid-conversation; any other first message just names the topic.
     const continued = continuedTopic(text);
@@ -376,6 +437,399 @@ export class ChatController {
       }
     }
     await this.send(answer === "show" ? "Show me" : "Not now");
+  }
+
+  /** Run a slash command by name (no echo; send() echoes typed commands). */
+  public async dispatchSlash(name: string, args: string): Promise<void> {
+    const def = findSlashCommand(name);
+    if (!def) {
+      this.recordAndBroadcast({ type: "notice", kind: "info", text: unknownCommandText(name) });
+      return;
+    }
+    try {
+      await def.run(this.slashContext(), args);
+    } catch (error) {
+      this.recordAndBroadcast({
+        type: "notice",
+        kind: "error",
+        text: `That didn't work: ${shortReason(error)}.`,
+      });
+    }
+  }
+
+  /** The live side of SlashContext: cards, chats, and Muse calls. */
+  private slashContext(): SlashContext {
+    return {
+      showCard: (card, handlers) => this.showCard(card, handlers),
+      updateCard: (id, card) => this.updateCard(id, card),
+      closeCard: (id) => this.closeCard(id),
+      notice: (kind, text) => this.recordAndBroadcast({ type: "notice", kind, text }),
+      newChat: () => this.newChat(),
+      saveMyDay: () => this.saveMyDay(),
+      stop: () => this.stop(),
+      clearView: () => this.clearView(),
+      focusBrain: () => this.focusBrain(),
+      exportHistory: () => this.exportHistory(),
+      listSessions: () => this.slashListSessions(),
+      switchToSession: (id) => this.switchToSession(id),
+      readUsage: () => this.slashReadUsage(),
+      listModels: () => this.slashListModels(),
+      setModel: (modelId) => this.slashSetModel(modelId),
+      compact: () => this.slashCompact(),
+      recap: () => this.slashRecap(),
+      goal: (op, text) => this.slashGoal(op, text),
+      currentGoal: () => this.lastGoal,
+      sideAsk: (question) => this.slashSideAsk(question),
+      fork: () => this.slashFork(),
+      listTasks: () => this.slashListTasks(),
+      stopTask: (taskId) => this.slashStopTask(taskId),
+      stopAllTasks: () => this.slashStopAllTasks(),
+      listSkills: () => this.slashListSkills(),
+      setSkill: (selector, on) => this.slashSetSkill(selector, on),
+      listPlugins: () => this.slashListPlugins(),
+      installPlugin: (spec) => this.slashInstallPlugin(spec),
+      setEffort: (level) => this.slashSetEffort(level),
+      currentEffort: () => this.lastEffort,
+    };
+  }
+
+  /** The live host for a slash command, or a plain throw when none. */
+  private async slashHost(): Promise<{ host: MuseHost; root: string }> {
+    await this.prepare();
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      throw new Error("Open a folder first.");
+    }
+    return { host: await this.ensureHost(folder), root: folder.uri.fsPath };
+  }
+
+  private showCard(card: CardSpec, handlers?: CardHandlers): string {
+    this.cardCounter += 1;
+    const id = `card-${this.cardCounter}`;
+    if (handlers) {
+      this.cardHandlers.set(id, handlers);
+    }
+    this.recordAndBroadcast({
+      type: "card",
+      id,
+      title: card.title,
+      body: card.body,
+      ...(card.buttons ? { buttons: card.buttons } : {}),
+      ...(card.input ? { input: card.input } : {}),
+    });
+    return id;
+  }
+
+  private updateCard(id: string, card: CardSpec): void {
+    this.recordAndBroadcast({
+      type: "card",
+      id,
+      title: card.title,
+      body: card.body,
+      ...(card.buttons ? { buttons: card.buttons } : {}),
+      ...(card.input ? { input: card.input } : {}),
+    });
+  }
+
+  private closeCard(id: string): void {
+    this.cardHandlers.delete(id);
+    this.recordAndBroadcast({ type: "cardDone", id });
+  }
+
+  public onCardButton(cardId: string, buttonId: string): void {
+    void this.cardHandlers.get(cardId)?.onButton?.(buttonId);
+  }
+
+  public onCardInput(cardId: string, text: string): void {
+    if (text.trim() === "") {
+      return;
+    }
+    void this.cardHandlers.get(cardId)?.onInput?.(text);
+  }
+
+  private async slashListSessions(): Promise<ResumeSession[]> {
+    const { host, root } = await this.slashHost();
+    return host.listSessions(root);
+  }
+
+  /**
+   * Switch the panel to another saved chat: clear the view, resume it,
+   * replay its history as a fresh episode. The old chat stays saved.
+   */
+  public async switchToSession(id: string): Promise<void> {
+    if (id === this.museSessionId || this.switching) {
+      return;
+    }
+    const { host, root } = await this.slashHost();
+    this.switching = true;
+    if (this.saveRun) {
+      this.saveRun.cancelled = true;
+    }
+    this.pendingSave = undefined;
+    this.pendingBefore = undefined;
+    this.welcomeStep = undefined;
+    this.broadcast({ type: "welcomeSkip", show: false });
+    this.history = [];
+    this.broadcast({ type: "clear" });
+    this.running = true;
+    this.broadcast({ type: "turn", state: "started" });
+    this.setStatus("Switching chats…");
+    this.replaying = true;
+    this.replayer = new UndoReplayer([...this.undos.values()], id);
+    try {
+      const shown = await host.switchSession(id, root);
+      this.log(`Switched: server history (${shown} events)`);
+    } catch (error) {
+      this.replaying = false;
+      this.replayer = undefined;
+      this.running = false;
+      this.broadcast({ type: "turn", state: "done" });
+      this.setStatus("Ready");
+      this.recordAndBroadcast({
+        type: "notice",
+        kind: "error",
+        text: `Couldn't switch chats: ${commandErrorText(error)}.`,
+      });
+      // The old session is still saved; bring its view back.
+      this.prepared = false;
+      await this.prepare();
+      this.switching = false;
+      return;
+    }
+    for (const uid of this.replayer.finish()) {
+      this.emitReplayedUndo(uid);
+    }
+    this.replaying = false;
+    this.replayer = undefined;
+    this.storeSet(TRANSCRIPT_KEY, undefined);
+    this.storeSet(LAST_MESSAGE_KEY, undefined);
+    this.anchorHigh = 0;
+    this.forceCatchUp = true;
+    this.liveReplySeen = false;
+    this.sessionId = createSessionId();
+    this.sessionTopic = "";
+    this.persistSessionLabel();
+    this.broadcastSessionLabel();
+    this.lastUsage = undefined;
+    this.updateStatusBar(formatStatusBar(undefined));
+    this.running = false;
+    this.broadcast({ type: "turn", state: "done" });
+    this.setStatus("Ready");
+    this.switching = false;
+  }
+
+  private async slashReadUsage(): Promise<{
+    session?: SessionUsageTotals;
+    today: { totalTokens: number; usd: number };
+    resetAtMs?: number;
+  }> {
+    const { host, root } = await this.slashHost();
+    const reset = await host.readSubscription(root).catch(() => ({} as { resetAtMs?: number }));
+    const today = sumDayUsage(cleanDayUsage(this.globalState?.get<unknown>(DAILY_USAGE_KEY)));
+    return { session: this.lastUsage, today, ...reset };
+  }
+
+  /** A usage notification: status bar now, today's sums for later. */
+  private recordUsage(usage: SessionUsageTotals): void {
+    this.lastUsage = usage;
+    const prev: DayUsage | undefined = cleanDayUsage(this.globalState?.get<unknown>(DAILY_USAGE_KEY));
+    void this.globalState?.update(
+      DAILY_USAGE_KEY,
+      recordDayUsage(prev, todayKey(), this.museSessionId ?? "unknown", usage),
+    );
+    this.updateStatusBar(formatStatusBar(usage));
+  }
+
+  private async slashListModels(): Promise<ModelRow[]> {
+    const { host, root } = await this.slashHost();
+    return host.listModels(root);
+  }
+
+  private async slashSetModel(modelId: string): Promise<void> {
+    const { host, root } = await this.slashHost();
+    await host.setModel(root, modelId);
+  }
+
+  private async slashCompact(): Promise<"compacted" | "noop"> {
+    const { host, root } = await this.slashHost();
+    return host.compact(root);
+  }
+
+  private async slashRecap(): Promise<{ text: string; title?: string }> {
+    const { host, root } = await this.slashHost();
+    return host.recap(root);
+  }
+
+  private async slashGoal(op: "set" | "edit" | "pause" | "resume" | "clear", text?: string): Promise<void> {
+    const { host, root } = await this.slashHost();
+    await host.goalCommand(root, op, text);
+  }
+
+  private async slashSideAsk(question: string): Promise<string> {
+    const { host, root } = await this.slashHost();
+    return host.sideAsk(root, question);
+  }
+
+  private async slashFork(): Promise<void> {
+    const { host, root } = await this.slashHost();
+    await this.switchToSession(await host.forkSession(root));
+  }
+
+  private async slashListTasks(): Promise<TaskRow[]> {
+    const { host, root } = await this.slashHost();
+    return host.listTasks(root);
+  }
+
+  private async slashStopTask(taskId: string): Promise<void> {
+    const { host, root } = await this.slashHost();
+    await host.stopTask(root, taskId);
+  }
+
+  private async slashStopAllTasks(): Promise<void> {
+    const { host, root } = await this.slashHost();
+    await host.stopAllTasks(root);
+  }
+
+  private async slashListSkills(): Promise<SkillRow[]> {
+    const { host, root } = await this.slashHost();
+    return host.listSkills(root);
+  }
+
+  private async slashSetSkill(selector: string, on: boolean): Promise<void> {
+    const { host, root } = await this.slashHost();
+    await host.setSkill(root, selector, on);
+  }
+
+  private async slashListPlugins(): Promise<PluginRow[]> {
+    const { host, root } = await this.slashHost();
+    return host.listPlugins(root);
+  }
+
+  private async slashInstallPlugin(spec: string): Promise<string> {
+    const { host, root } = await this.slashHost();
+    const parsed = parsePluginSpec(spec);
+    if (!parsed) {
+      throw new Error("Tell me the plugin as store:name, or a folder path.");
+    }
+    const installed = await host.installPlugin(
+      root,
+      parsed.kind === "path" ? { path: parsed.path } : { marketplace: parsed.marketplace, name: parsed.name },
+    );
+    const label =
+      installed.id !== ""
+        ? installed.id
+        : parsed.kind === "path"
+          ? (parsed.path.split(/[\\/]/).pop() ?? parsed.path)
+          : parsed.name;
+    return `Installed ${label} v${installed.version}.${installed.advisory ? ` ${installed.advisory}` : ""}`;
+  }
+
+  private async slashSetEffort(level: EffortLevel): Promise<void> {
+    const { host, root } = await this.slashHost();
+    await host.setEffort(root, level);
+    this.lastEffort = level;
+    this.storeSet(EFFORT_KEY, level);
+    this.broadcast({ type: "effort", level });
+  }
+
+  /** The 🎯 chip: ask for the goal, then pin it. */
+  public async askGoal(): Promise<void> {
+    const text = await vscode.window.showInputBox({
+      title: "Goal for this chat",
+      value: this.lastGoal?.objective ?? "",
+      prompt: "What are we working toward? The pin shows it with a progress bar.",
+    });
+    if (text === undefined || text.trim() === "") {
+      return;
+    }
+    try {
+      await this.slashContext().goal("set", text.trim());
+      this.recordAndBroadcast({ type: "notice", kind: "info", text: "Goal pinned." });
+    } catch (error) {
+      this.recordAndBroadcast({
+        type: "notice",
+        kind: "error",
+        text: `Couldn't pin the goal: ${commandErrorText(error)}.`,
+      });
+    }
+  }
+
+  /** The ⚡ chip: quick → normal → deep, round and round. */
+  public async cycleEffort(): Promise<void> {
+    const order: EffortLevel[] = ["quick", "normal", "deep"];
+    const next = order[(order.indexOf(this.lastEffort) + 1) % order.length] ?? "normal";
+    try {
+      await this.slashContext().setEffort(next);
+    } catch (error) {
+      this.recordAndBroadcast({
+        type: "notice",
+        kind: "error",
+        text: `Couldn't set the effort: ${commandErrorText(error)}.`,
+      });
+    }
+  }
+
+  /** Clear the panel view: the chat, undos and brain all stay. */
+  public clearView(): void {
+    this.history = [];
+    this.storeSet(TRANSCRIPT_KEY, undefined);
+    this.broadcast({ type: "clear" });
+    this.broadcast({ type: "turn", state: "done" });
+    this.setStatus("Ready");
+  }
+
+  /** Focus the Brain view and open the project notes. */
+  public async focusBrain(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      this.broadcast({ type: "noFolder" });
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand("metaBetta.brain.focus");
+    } catch {
+      // The file below still opens.
+    }
+    try {
+      const doc = await vscode.workspace.openTextDocument(
+        vscode.Uri.joinPath(folder.uri, "brain", "project.md"),
+      );
+      await vscode.window.showTextDocument(doc);
+    } catch {
+      this.recordAndBroadcast({ type: "notice", kind: "error", text: "Couldn't open brain/project.md." });
+    }
+  }
+
+  /** Save the visible conversation to a Markdown file; undefined on cancel. */
+  public async exportHistory(): Promise<string | undefined> {
+    const lines = [`# Meta Betta chat — ${this.sessionLabel()}`, ""];
+    let messages = 0;
+    for (const entry of this.history) {
+      if (entry.type === "day") {
+        lines.push(`## ${entry.label}`, "");
+      } else if (entry.type === "user" || entry.type === "assistant") {
+        messages += 1;
+        const when = entry.time ? ` (${entry.time})` : "";
+        lines.push(`**${entry.type === "user" ? "You" : "Muse"}**${when}`, entry.text, "");
+      }
+    }
+    if (messages === 0) {
+      this.recordAndBroadcast({ type: "notice", kind: "info", text: "Nothing to save yet." });
+      return undefined;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri: folder
+        ? vscode.Uri.joinPath(folder.uri, `meta-betta-chat-${todayKey()}.md`)
+        : undefined,
+      filters: { Markdown: ["md"] },
+      saveLabel: "Save chat",
+    });
+    if (!uri) {
+      return undefined;
+    }
+    await writeFile(uri.fsPath, `${lines.join("\n").trimEnd()}\n`, "utf8");
+    return uri.fsPath;
   }
 
   private async fileWelcomeName(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
@@ -588,7 +1042,12 @@ export class ChatController {
     const now = new Date();
     const entries: { file: string; text: string }[] = [];
     if (sections.project) {
-      entries.push({ file: "project.md", text: sections.project });
+      entries.push({
+        file: "project.md",
+        text: this.lastGoal
+          ? withGoalLine(sections.project, this.lastGoal.objective, this.lastGoal.percentComplete)
+          : sections.project,
+      });
     }
     if (sections.log) {
       entries.push({ file: todayLogFile(now), text: sections.log });
@@ -1025,6 +1484,8 @@ export class ChatController {
     this.forceCatchUp = true;
     this.running = false;
     this.lastStatus = "";
+    this.lastUsage = undefined;
+    this.updateStatusBar(formatStatusBar(undefined));
     this.liveReplySeen = false;
     this.sessionId = createSessionId();
     this.sessionTopic = "";
@@ -1311,6 +1772,27 @@ export class ChatController {
   }
 
   private onHostEvent(event: MuseHostEvent): void {
+    // State updates, not chat: they apply during saves too.
+    if (event.type === "usage") {
+      this.recordUsage(event.usage);
+      return;
+    }
+    if (event.type === "goal") {
+      this.lastGoal = event.goal;
+      this.storeSet(GOAL_KEY, event.goal);
+      this.broadcast({ type: "goal", goal: event.goal });
+      return;
+    }
+    if (event.type === "effort") {
+      this.lastEffort = event.level;
+      this.storeSet(EFFORT_KEY, event.level);
+      this.broadcast({ type: "effort", level: event.level });
+      return;
+    }
+    if (event.type === "model") {
+      // No persistent display; /model lists fresh.
+      return;
+    }
     const save = this.saveRun;
     if (save) {
       this.onSaveEvent(event, save);
@@ -1428,7 +1910,10 @@ export class ChatController {
     // Streaming updates replace their earlier self, so history stays compact
     // and a replay shows each bubble once, in its final state.
     const upsertId =
-      stamped.type === "assistant" || stamped.type === "thinking" || stamped.type === "tool"
+      stamped.type === "assistant" ||
+      stamped.type === "thinking" ||
+      stamped.type === "tool" ||
+      stamped.type === "card"
         ? stamped.id
         : undefined;
     if (upsertId !== undefined) {
@@ -1462,6 +1947,16 @@ export class ChatController {
     this.history.push(event);
     if (this.history.length > HISTORY_LIMIT) {
       this.history.splice(0, this.history.length - HISTORY_LIMIT);
+      const alive = new Set(
+        this.history
+          .filter((entry): entry is Extract<TranscriptEvent, { type: "card" }> => entry.type === "card")
+          .map((entry) => entry.id),
+      );
+      for (const id of [...this.cardHandlers.keys()]) {
+        if (!alive.has(id)) {
+          this.cardHandlers.delete(id);
+        }
+      }
     }
   }
 
@@ -1538,6 +2033,51 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     if (parsed) {
       void controller.answerNudge(parsed.id, parsed.answer, parsed.thing);
     }
+    return;
+  }
+  if (message.type === "cardButton") {
+    const parsed = parseCardButton(message);
+    if (parsed) {
+      controller.onCardButton(parsed.cardId, parsed.buttonId);
+    }
+    return;
+  }
+  if (message.type === "cardInput") {
+    const parsed = parseCardInput(message);
+    if (parsed) {
+      controller.onCardInput(parsed.cardId, parsed.text);
+    }
+    return;
+  }
+  if (message.type === "goalAsk") {
+    void controller.askGoal();
+    return;
+  }
+  if (message.type === "sideBox") {
+    void controller.dispatchSlash("side", "");
+    return;
+  }
+  if (message.type === "forkNow") {
+    void controller.dispatchSlash("fork", "");
+    return;
+  }
+  if (message.type === "usageNow") {
+    void controller.dispatchSlash("usage", "");
+    return;
+  }
+  if (message.type === "effortCycle") {
+    void controller.cycleEffort();
+    return;
+  }
+  if (
+    message.type === "goalAction" &&
+    (message.action === "pause" || message.action === "resume" || message.action === "clear")
+  ) {
+    void controller.dispatchSlash("goal", message.action);
+    return;
+  }
+  if (message.type === "forkMessage" && typeof message.id === "string") {
+    void controller.dispatchSlash("fork", "");
     return;
   }
   const text = parseSendMessage(message);

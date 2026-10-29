@@ -189,6 +189,13 @@ export function withNameLine(content: string, name: string): string {
   return `${content.replace(/\n*$/, "")}\n\nName: ${name.trim()}\n`;
 }
 
+/** File the chat's goal and its percent with a save's project entry. */
+export function withGoalLine(text: string, objective: string, percentComplete: number): string {
+  const percent = Math.min(100, Math.max(0, Math.round(percentComplete)));
+  const clean = objective.replace(/\s+/g, " ").trim().slice(0, 200);
+  return `${text.replace(/\n*$/, "")}\n- Goal: ${clean} (${percent}%)\n`;
+}
+
 /** A declined nudge, noted once per thing so it's never suggested again. */
 export function withNotInterested(content: string, thing: string): string {
   const clean = thing.replace(/\s+/g, " ").trim().slice(0, 80);

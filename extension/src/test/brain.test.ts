@@ -37,6 +37,7 @@ import {
   tricksPreview,
   UnsafeBackupError,
   welcomeName,
+  withGoalLine,
   withNameLine,
   withNotInterested,
   withStartHere,
@@ -51,6 +52,7 @@ import {
   WELCOME_MEMORY_TEXT,
   WELCOME_PROMPT,
 } from "../brain/prompts.js";
+import { NUDGE_IDEAS } from "../brain/nudges.js";
 
 /** In-memory file system. Yields between steps so races interleave. */
 function fakeFs(): BrainFs & { files: Map<string, string> } {
@@ -797,6 +799,18 @@ describe("front door rule 10", () => {
     assert.ok(FRONT_DOOR_SECTION.includes("read a screenshot or photo"));
     assert.ok(FRONT_DOOR_SECTION.includes("when:"));
   });
+
+  it("leads with the top five, pointing at the chips", () => {
+    const first = NUDGE_IDEAS.slice(0, 5).map((idea) => idea.thing);
+    assert.deepEqual(first, [
+      "undo any reply that changed files — just hit ↩ under it",
+      "show what this chat is costing (📊 Usage chip)",
+      "answer a quick side question without losing our place (💬 chip)",
+      "track a goal for this chat (🎯 Goal chip)",
+      "try another approach without losing this one (🔀 Fork chip)",
+    ]);
+    assert.ok(NUDGE_IDEAS.every((idea) => !idea.thing.includes("voice note")));
+  });
 });
 
 describe("front door rule 11", () => {
@@ -815,6 +829,16 @@ describe("front door rule 12", () => {
     assert.ok(FRONT_DOOR_SECTION.includes("12. If the user is just noticing something"));
     assert.ok(FRONT_DOOR_SECTION.includes("Want me to look at that?"));
     assert.ok(FRONT_DOOR_SECTION.includes("Only act on a clear ask"));
+  });
+});
+
+describe("withGoalLine", () => {
+  it("files the goal and its percent with the project", () => {
+    assert.equal(
+      withGoalLine("- shipped the fix\n", "Ship the shop page", 45),
+      "- shipped the fix\n- Goal: Ship the shop page (45%)\n",
+    );
+    assert.ok(withGoalLine("done\n", "Ship it", 145).includes("(100%)"));
   });
 });
 

@@ -12,6 +12,17 @@ let brainSideProvider: BrainViewProvider | undefined;
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Meta Betta");
   context.subscriptions.push(output);
+  const usageBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  usageBar.command = "metaBetta.showUsage";
+  usageBar.text = "☕ Muse";
+  usageBar.tooltip = "Meta Betta usage — click for details";
+  usageBar.show();
+  context.subscriptions.push(
+    usageBar,
+    vscode.commands.registerCommand("metaBetta.showUsage", () => {
+      void controller?.dispatchSlash("usage", "");
+    }),
+  );
   controller = new ChatController(
     context.extensionUri,
     context.workspaceState,
@@ -31,6 +42,10 @@ export function activate(context: vscode.ExtensionContext): void {
       brainProvider?.outline();
       brainSideProvider?.outline();
     },
+    (text) => {
+      usageBar.text = text;
+    },
+    context.globalState,
   );
   viewProvider = new ChatViewProvider(context.extensionUri, controller, () => {
     if (controller) {
