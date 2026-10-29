@@ -94,6 +94,11 @@ body {
   border-color: var(--vscode-focusBorder);
 }
 
+.brain-card.flash {
+  border-color: var(--vscode-focusBorder);
+  background-color: var(--vscode-editor-selectionBackground, var(--vscode-input-background));
+}
+
 .brain-title {
   font-weight: 600;
 }
@@ -301,4 +306,38 @@ body {
 .bubble.assistant ol {
   margin: 4px 0;
   padding-left: 20px;
+}
+
+.saved {
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background-color: var(--vscode-input-background);
+}
+
+.saved-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.saved-backup {
+  margin: 4px 0 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.saved-section {
+  margin-top: 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.saved-section summary {
+  cursor: pointer;
+}
+
+.saved-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
 }

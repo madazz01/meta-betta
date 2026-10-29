@@ -16,7 +16,8 @@
     "onView:metaBetta.chat",
     "onView:metaBetta.brain",
     "onView:metaBetta.brainSidebar",
-    "onCommand:metaBetta.open"
+    "onCommand:metaBetta.open",
+    "onCommand:metaBetta.saveMyDay"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -30,6 +31,10 @@
       {
         "command": "metaBetta.open",
         "title": "Meta Betta: Open chat"
+      },
+      {
+        "command": "metaBetta.saveMyDay",
+        "title": "Meta Betta: Save my day"
       }
     ],
     "viewsContainers": {
@@ -86,6 +91,17 @@
           "default": 4,
           "minimum": 0,
           "description": "Catch up with a brain summary when the last message is older than this many hours (or from an earlier day)."
+        },
+        "metaBetta.autoSaveMinutes": {
+          "type": "number",
+          "default": 45,
+          "minimum": 0,
+          "description": "Quietly save to the brain every so many minutes while chatting (0 = off). Also saves every 15 turns."
+        },
+        "metaBetta.backupFolder": {
+          "type": "string",
+          "default": "",
+          "description": "Copy brain/ here after every save, under this workspace's folder name. Empty = off. Point it at a synced folder (Drive, OneDrive, Dropbox) for a free cloud copy."
         }
       }
     }

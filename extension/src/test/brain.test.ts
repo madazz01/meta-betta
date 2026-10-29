@@ -1,12 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendEntry,
+  backupBrain,
   brainCardInputs,
   buildBackgroundBlock,
   buildBrainCards,
   catchUpGreeting,
+  cleanLiveLabels,
   cleanSessionLabel,
   cleanTopic,
   continuedTopic,
@@ -14,17 +18,22 @@ import {
   ensureBrain,
   ensureFrontDoor,
   entryHeading,
+  formatSaveTime,
   formatSessionLabel,
   formatUpdated,
   FRONT_DOOR_SECTION,
   greetingName,
+  isLabelTaken,
+  LIVE_LABEL_TTL_MS,
   needsCatchUp,
+  splitSaveReply,
   startHereSection,
   stripBackgroundPrefix,
   todayLogFile,
   topicFromFirstMessage,
   type BrainFs,
 } from "../brain/brain.js";
+import { isSavePrompt, QUICK_SAVE_PROMPT, SAVE_MY_DAY_PROMPT } from "../brain/prompts.js";
 
 /** In-memory file system. Yields between steps so races interleave. */
 function fakeFs(): BrainFs & { files: Map<string, string> } {
@@ -436,5 +445,101 @@ describe("formatUpdated", () => {
     assert.equal(formatUpdated(new Date(2026, 9, 1).getTime(), noon), "1 Oct");
     assert.equal(formatUpdated(new Date(2025, 11, 25).getTime(), noon), "25 Dec 2025");
     assert.equal(formatUpdated(undefined, noon), "Never");
+  });
+});
+
+describe("splitSaveReply", () => {
+  it("splits a full reply into its five sections", () => {
+    const sections = splitSaveReply(
+      "## project\n- Works.\n\n## log\n- Did things.\n\n## tricks\n- Restart it.\n\n## good-for\n- Read a photo.\n\n## me\n- Likes short answers.\n",
+    );
+    assert.deepEqual(sections, {
+      project: "- Works.",
+      log: "- Did things.",
+      tricks: "- Restart it.",
+      "good-for": "- Read a photo.",
+      me: "- Likes short answers.",
+    });
+  });
+
+  it("tolerates missing sections, odd cases and repeats", () => {
+    const sections = splitSaveReply("## Project\n- Works.\n\n## GOOD FOR\n- Read a photo.\n\n## project\n- More.\n");
+    assert.deepEqual(sections, { project: "- Works.\n\n- More.", "good-for": "- Read a photo." });
+  });
+
+  it("skips unknown headings and empty sections", () => {
+    assert.deepEqual(splitSaveReply("## project\n- Works.\n\n## feelings\n- Tired.\n"), { project: "- Works." });
+    assert.deepEqual(splitSaveReply("## project\n\n## log\n- Did things.\n"), { log: "- Did things." });
+    assert.deepEqual(splitSaveReply(""), {});
+    assert.deepEqual(splitSaveReply("No headings here."), {});
+  });
+});
+
+describe("save prompts", () => {
+  it("recognises its own prompts and nothing else", () => {
+    assert.equal(isSavePrompt(SAVE_MY_DAY_PROMPT), true);
+    assert.equal(isSavePrompt(QUICK_SAVE_PROMPT), true);
+    assert.equal(isSavePrompt("Save my day please"), false);
+    assert.equal(isSavePrompt(""), false);
+  });
+});
+
+describe("formatSaveTime", () => {
+  it("words the time like 2:15pm", () => {
+    assert.equal(formatSaveTime(new Date(2026, 9, 28, 14, 15)), "2:15pm");
+    assert.equal(formatSaveTime(new Date(2026, 9, 28, 9, 5)), "9:05am");
+    assert.equal(formatSaveTime(new Date(2026, 9, 28, 0, 1)), "12:01am");
+    assert.equal(formatSaveTime(new Date(2026, 9, 28, 12, 0)), "12:00pm");
+  });
+});
+
+describe("backupBrain", () => {
+  it("copies brain/ over the old backup", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "meta-betta-backup-"));
+    try {
+      const root = join(sandbox, "work");
+      const backupFolder = join(sandbox, "backups");
+      await mkdir(join(root, "brain", "log"), { recursive: true });
+      await mkdir(backupFolder, { recursive: true });
+      await writeFile(join(root, "brain", "project.md"), "new", "utf8");
+      await writeFile(join(root, "brain", "log", "2026-10-28.md"), "today", "utf8");
+      // A stale file from an earlier backup must not survive.
+      await mkdir(join(backupFolder, "work", "brain"), { recursive: true });
+      await writeFile(join(backupFolder, "work", "brain", "stale.md"), "old", "utf8");
+      await backupBrain(root, backupFolder);
+      assert.equal(await readFile(join(backupFolder, "work", "brain", "project.md"), "utf8"), "new");
+      assert.equal(await readFile(join(backupFolder, "work", "brain", "log", "2026-10-28.md"), "utf8"), "today");
+      await assert.rejects(readFile(join(backupFolder, "work", "brain", "stale.md"), "utf8"));
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when the backup folder is missing", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "meta-betta-backup-"));
+    try {
+      await mkdir(join(sandbox, "work", "brain"), { recursive: true });
+      await assert.rejects(backupBrain(join(sandbox, "work"), join(sandbox, "nowhere")));
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("live labels", () => {
+  it("a fresh heartbeat on the stored id means taken", () => {
+    const now = Date.now();
+    assert.equal(isLabelTaken("ab12", { ab12: now - 1000 }, now), true);
+    assert.equal(isLabelTaken("ab12", { ab12: now - LIVE_LABEL_TTL_MS }, now), false);
+    assert.equal(isLabelTaken("ab12", { cd34: now - 1000 }, now), false);
+    assert.equal(isLabelTaken("ab12", {}, now), false);
+  });
+
+  it("forgets anything that is not id -> timestamp", () => {
+    assert.deepEqual(cleanLiveLabels({ ab12: 1000, "": 1000, cd34: "soon", ef56: Number.NaN }), {
+      ab12: 1000,
+    });
+    assert.deepEqual(cleanLiveLabels([["ab12", 1000]]), {});
+    assert.deepEqual(cleanLiveLabels(undefined), {});
   });
 });

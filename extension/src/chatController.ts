@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -6,20 +7,30 @@ import { parseFileLink } from "./lib/links.js";
 import { buildTranscript, cleanTranscript } from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
 import {
+  appendEntry,
+  backupBrain,
   buildBackgroundBlock,
   catchUpGreeting,
+  cleanLiveLabels,
   cleanSessionLabel,
   cleanTopic,
   continuedTopic,
   createSessionId,
   ensureBrain,
   ensureFrontDoor,
+  formatSaveTime,
   formatSessionLabel,
+  isLabelTaken,
+  LIVE_LABEL_TTL_MS,
   needsCatchUp,
   nodeBrainFs,
+  splitSaveReply,
   todayLogFile,
   topicFromFirstMessage,
+  type SaveSection,
+  type SaveSections,
 } from "./brain/brain.js";
+import { QUICK_SAVE_PROMPT, SAVE_MY_DAY_PROMPT } from "./brain/prompts.js";
 import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import { type ApprovalCardEvent, MuseHost, type MuseHostEvent } from "./muse/museHost.js";
@@ -29,6 +40,11 @@ export interface ChatSink {
   post(message: unknown): void;
 }
 
+export interface SavedSection {
+  title: string;
+  text: string;
+}
+
 type TranscriptEvent =
   | { type: "user"; text: string }
   | { type: "assistant"; id: string; text: string }
@@ -36,13 +52,36 @@ type TranscriptEvent =
   | { type: "tool"; id: string; text: string; done: boolean }
   | ApprovalCardEvent
   | { type: "approvalDone"; id: string }
-  | { type: "notice"; text: string; copy?: string; kind: "info" | "error" };
+  | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
+  | { type: "saved"; text: string; backup?: string; sections: SavedSection[] };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
 const SESSION_LABEL_KEY = "metaBetta.sessionLabel";
 const TRANSCRIPT_KEY = "metaBetta.transcript";
 const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
+const LIVE_LABELS_KEY = "metaBetta.liveLabels";
+/** Heartbeat + quick-save check, twice a minute. */
+const TICK_MS = 30_000;
+/** A quick save also fires after this many turns, whatever the clock says. */
+const QUICK_SAVE_TURNS = 15;
+
+const SAVE_TITLES: Record<SaveSection, string> = {
+  project: "Project",
+  log: "Today's log",
+  tricks: "Tricks",
+  "good-for": "Good for",
+  me: "About you",
+};
+
+interface SaveRun {
+  quick: boolean;
+  texts: Map<string, string>;
+  failed: boolean;
+  stopped: boolean;
+  cancelled: boolean;
+  label: string;
+}
 
 /**
  * Owns the Muse session and the chat history. Every attached surface shows
@@ -63,6 +102,13 @@ export class ChatController {
   private sessionId = createSessionId();
   private sessionTopic = "";
   private labelSettled = false;
+  /** A second window on this folder: own id, never overwrites the stored label. */
+  private diverged = false;
+  private saveRun: SaveRun | undefined;
+  private pendingSave: "full" | undefined;
+  private turnsSinceSave = 0;
+  private lastSaveAt = Date.now();
+  private readonly tickTimer: ReturnType<typeof setInterval>;
   private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
   private readonly createHostShared = singleFlight((folder: vscode.WorkspaceFolder) =>
     this.createHostAsync(folder),
@@ -71,7 +117,15 @@ export class ChatController {
   public constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly storage: vscode.Memento,
-  ) {}
+    private readonly onBrainChanged: (files: string[]) => void = () => undefined,
+  ) {
+    this.heartbeat();
+    this.tickTimer = setInterval(() => {
+      this.heartbeat();
+      this.maybeQuickSave();
+    }, TICK_MS);
+    this.tickTimer.unref?.();
+  }
 
   public bind(sink: ChatSink): void {
     this.adoptStoredLabel();
@@ -220,6 +274,245 @@ export class ChatController {
     void this.host?.stop();
   }
 
+  /** Ask Muse what happened, then file the reply into brain/ ourselves. */
+  public async saveMyDay(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      this.broadcast({ type: "noFolder" });
+      return;
+    }
+    // History first, so yesterday's messages stay above a fresh reply.
+    await this.prepare();
+    if (!this.memoryOn) {
+      this.broadcast({
+        type: "notice",
+        kind: "info",
+        text: "Memory is off, so there's nowhere to save. Turn it on with the Meta Betta › Memory setting.",
+      });
+      return;
+    }
+    if (this.running || this.saveRun) {
+      this.pendingSave = "full";
+      this.broadcast({ type: "notice", kind: "info", text: "I'll save as soon as this reply finishes." });
+      return;
+    }
+    await this.runSave(folder, false);
+  }
+
+  private async runSave(folder: vscode.WorkspaceFolder, quick: boolean): Promise<void> {
+    // Claimed up front: the timer and turn-done both check, and must not
+    // start a second save while the host is still starting.
+    this.saveRun = {
+      quick,
+      texts: new Map(),
+      failed: false,
+      stopped: false,
+      cancelled: false,
+      label: this.sessionLabel(),
+    };
+    this.turnsSinceSave = 0;
+    this.lastSaveAt = Date.now();
+    this.setStatus(quick ? "Saving…" : "Saving your day…");
+    let host: MuseHost;
+    try {
+      host = await this.ensureHost(folder);
+    } catch (error) {
+      this.saveRun = undefined;
+      this.broadcast({
+        type: "notice",
+        kind: "error",
+        text: `Couldn't save: ${shortReason(error)}.`,
+      });
+      this.setStatus("Ready");
+      return;
+    }
+    await host.send(quick ? QUICK_SAVE_PROMPT : SAVE_MY_DAY_PROMPT, folder.uri.fsPath);
+    await this.finalizeSave(folder, quick);
+  }
+
+  private async finalizeSave(folder: vscode.WorkspaceFolder, quick: boolean): Promise<void> {
+    const save = this.saveRun;
+    this.saveRun = undefined;
+    if (!save || save.cancelled) {
+      return;
+    }
+    if (save.stopped) {
+      if (quick) {
+        this.setStatus("Ready");
+      } else {
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "info",
+          text: "Save stopped — nothing was written.",
+        });
+        this.setStatus("Ready");
+      }
+      return;
+    }
+    if (save.failed) {
+      // The error notice was already shown; just reset the status.
+      this.setStatus("Ready");
+      return;
+    }
+    const sections = splitSaveReply([...save.texts.values()].join("\n\n"));
+    const files = await this.appendSaveSections(folder, sections, save.label);
+    if (files.length === 0) {
+      if (Object.keys(sections).length === 0) {
+        if (!quick) {
+          this.recordAndBroadcast({ type: "notice", kind: "info", text: "Nothing new to save." });
+        }
+      } else {
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "error",
+          text: "Couldn't write to the brain.",
+        });
+      }
+      this.setStatus("Ready");
+      return;
+    }
+    this.onBrainChanged(files);
+    const backup = await this.backup(folder);
+    if (quick) {
+      let status = `Saved ✓ ${formatSaveTime(new Date())}`;
+      if (backup === "ok") {
+        status += " · Backed up ✓";
+      } else if (backup === "failed") {
+        status += " · backup folder missing";
+      }
+      this.setStatus(status);
+      return;
+    }
+    this.recordAndBroadcast({
+      type: "saved",
+      text: "Saved ✓ — see you tomorrow",
+      backup:
+        backup === "ok"
+          ? "Backed up ✓"
+          : backup === "failed"
+            ? "Couldn't reach the backup folder — this save stayed on this computer."
+            : undefined,
+      sections: savedSections(sections),
+    });
+    this.setStatus("Ready");
+    this.offerGitCommit(folder);
+  }
+
+  /** Append each save section to its brain file; returns the files written. */
+  private async appendSaveSections(
+    folder: vscode.WorkspaceFolder,
+    sections: SaveSections,
+    label: string,
+  ): Promise<string[]> {
+    const root = folder.uri.fsPath;
+    const now = new Date();
+    const entries: { file: string; text: string }[] = [];
+    if (sections.project) {
+      entries.push({ file: "project.md", text: sections.project });
+    }
+    if (sections.log) {
+      entries.push({ file: todayLogFile(now), text: sections.log });
+    }
+    if (sections.tricks) {
+      entries.push({ file: "tricks.md", text: sections.tricks });
+    }
+    if (sections["good-for"]) {
+      entries.push({ file: "good-for.md", text: sections["good-for"] });
+    }
+    if (sections.me) {
+      entries.push({ file: "me.md", text: sections.me });
+    }
+    if (entries.length === 0) {
+      return [];
+    }
+    await ensureBrain(root);
+    const written: string[] = [];
+    for (const { file, text } of entries) {
+      try {
+        await appendEntry(root, file, label, text, nodeBrainFs, now);
+        written.push(file);
+      } catch {
+        // One failed file shouldn't sink the others.
+      }
+    }
+    return written;
+  }
+
+  private async backup(folder: vscode.WorkspaceFolder): Promise<"off" | "ok" | "failed"> {
+    const backupFolder = vscode.workspace.getConfiguration("metaBetta").get<string>("backupFolder", "").trim();
+    if (!backupFolder) {
+      return "off";
+    }
+    try {
+      await backupBrain(folder.uri.fsPath, backupFolder);
+      return "ok";
+    } catch {
+      return "failed";
+    }
+  }
+
+  /** After a manual save in a git repo, offer to commit the brain. Never pushes. */
+  private offerGitCommit(folder: vscode.WorkspaceFolder): void {
+    const root = folder.uri.fsPath;
+    execFile("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root }, (error, stdout) => {
+      if (error || stdout.trim() !== "true") {
+        return;
+      }
+      void vscode.window.showInformationMessage("Also commit the brain?", "Commit brain").then((choice) => {
+        if (choice !== "Commit brain") {
+          return;
+        }
+        execFile("git", ["add", "brain"], { cwd: root }, (addError) => {
+          if (addError) {
+            this.broadcast({ type: "notice", kind: "error", text: "Couldn't commit the brain." });
+            return;
+          }
+          const date = todayLogFile().slice("log/".length, -".md".length);
+          execFile("git", ["commit", "-m", `Save my day ${date}`], { cwd: root }, (commitError) => {
+            if (commitError) {
+              const alreadyDone = String(commitError.message).includes("nothing to commit");
+              this.broadcast({
+                type: "notice",
+                kind: alreadyDone ? "info" : "error",
+                text: alreadyDone ? "Already committed — nothing new." : "Couldn't commit the brain.",
+              });
+              return;
+            }
+            this.broadcast({ type: "notice", kind: "info", text: "Brain committed." });
+          });
+        });
+      });
+    });
+  }
+
+  /** A quiet quick save when one is due. Never starts one mid-turn. */
+  private maybeQuickSave(): void {
+    const minutes = vscode.workspace.getConfiguration("metaBetta").get<number>("autoSaveMinutes", 45);
+    if (!minutes || minutes <= 0 || !this.memoryOn) {
+      return;
+    }
+    if (this.running || this.saveRun || this.pendingSave) {
+      return;
+    }
+    if (this.turnsSinceSave === 0) {
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      return;
+    }
+    const oldEnough = Date.now() - this.lastSaveAt >= minutes * 60_000;
+    if (this.turnsSinceSave < QUICK_SAVE_TURNS && !oldEnough) {
+      return;
+    }
+    void this.runSave(folder, true);
+  }
+
+  private setStatus(text: string): void {
+    this.lastStatus = text;
+    this.broadcast({ type: "status", text });
+  }
+
   public approve(id: string, choiceId: string): void {
     this.approvalResolvers.get(id)?.(choiceId);
     this.approvalResolvers.delete(id);
@@ -238,6 +531,12 @@ export class ChatController {
     if (!folder) {
       return;
     }
+    if (this.saveRun) {
+      // Stays set so late save events keep routing to onSaveEvent (dropped);
+      // finalizeSave clears it when the interrupted turn ends.
+      this.saveRun.cancelled = true;
+    }
+    this.pendingSave = undefined;
     const host = await this.ensureHost(folder);
     try {
       await host.newSession(folder.uri.fsPath);
@@ -291,6 +590,10 @@ export class ChatController {
   }
 
   public async dispose(): Promise<void> {
+    clearInterval(this.tickTimer);
+    const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
+    delete live[this.sessionId];
+    this.storeSet(LIVE_LABELS_KEY, live);
     const host = this.host;
     this.host = undefined;
     if (host) {
@@ -398,22 +701,46 @@ export class ChatController {
 
   private adoptStoredLabel(): void {
     // A resumed chat keeps its label; a chat already renamed or reset this
-    // boot keeps what it has.
+    // boot keeps what it has. A second window on this folder keeps its own
+    // id (the stored one is taken) so each window saves under its own label.
     if (this.labelSettled) {
       return;
     }
     this.labelSettled = true;
     const stored = cleanSessionLabel(this.storage.get<unknown>(SESSION_LABEL_KEY));
     if (stored) {
-      this.sessionId = stored.id;
-      this.sessionTopic = stored.topic;
+      const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
+      if (isLabelTaken(stored.id, live, Date.now())) {
+        this.diverged = true;
+        this.sessionTopic = stored.topic;
+      } else {
+        this.sessionId = stored.id;
+        this.sessionTopic = stored.topic;
+      }
       this.broadcastSessionLabel();
     }
+    this.heartbeat();
   }
 
   private persistSessionLabel(): void {
     this.labelSettled = true;
-    this.storeSet(SESSION_LABEL_KEY, { id: this.sessionId, topic: this.sessionTopic });
+    if (!this.diverged) {
+      this.storeSet(SESSION_LABEL_KEY, { id: this.sessionId, topic: this.sessionTopic });
+    }
+    this.heartbeat();
+  }
+
+  /** Mark this window's label id as live, pruning windows long gone. */
+  private heartbeat(): void {
+    const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
+    const now = Date.now();
+    for (const id of Object.keys(live)) {
+      if (now - (live[id] ?? 0) >= LIVE_LABEL_TTL_MS) {
+        delete live[id];
+      }
+    }
+    live[this.sessionId] = now;
+    this.storeSet(LIVE_LABELS_KEY, live);
   }
 
   private createHost(trustWorkspace: boolean): MuseHost {
@@ -444,11 +771,29 @@ export class ChatController {
   }
 
   private onHostEvent(event: MuseHostEvent): void {
+    const save = this.saveRun;
+    if (save) {
+      this.onSaveEvent(event, save);
+      return;
+    }
     if (event.type === "turn") {
       this.running = event.state === "started";
       this.broadcast(event);
       if (!this.running) {
         this.persistTranscript();
+        this.turnsSinceSave += 1;
+        const pending = this.pendingSave;
+        this.pendingSave = undefined;
+        if (pending === "full") {
+          const folder = vscode.workspace.workspaceFolders?.[0];
+          if (folder && this.memoryOn) {
+            void this.runSave(folder, false);
+          } else {
+            this.broadcast({ type: "notice", kind: "info", text: "Couldn't save this time." });
+          }
+        } else {
+          this.maybeQuickSave();
+        }
       }
       return;
     }
@@ -461,6 +806,49 @@ export class ChatController {
       this.liveReplySeen = true;
     }
     this.recordAndBroadcast(event);
+  }
+
+  /**
+   * Route a save turn's events: collect the reply for filing, keep the chat
+   * quiet. Finalizing happens after host.send() resolves, so the host's own
+   * "Ready" can't overwrite the save status.
+   */
+  private onSaveEvent(event: MuseHostEvent, save: SaveRun): void {
+    if (save.cancelled) {
+      return;
+    }
+    if (event.type === "assistant") {
+      save.texts.set(event.id, event.text);
+      return;
+    }
+    if (event.type === "notice") {
+      if (event.text === "Stopped.") {
+        save.stopped = true;
+        return;
+      }
+      if (event.kind === "error") {
+        save.failed = true;
+      }
+      this.recordAndBroadcast(event);
+      return;
+    }
+    if (event.type === "turn") {
+      this.running = event.state === "started";
+      this.broadcast(event);
+      if (!this.running) {
+        this.persistTranscript();
+      }
+      return;
+    }
+    if (event.type === "status") {
+      // Keep "Saving…" until the save itself reports.
+      return;
+    }
+    if (event.type === "approval" || event.type === "approvalDone") {
+      this.recordAndBroadcast(event);
+      return;
+    }
+    // Thinking and tool rows stay out of the chat during a save.
   }
 
   private askApproval(card: ApprovalCardEvent): Promise<string | undefined> {
@@ -514,6 +902,10 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     controller.stop();
     return;
   }
+  if (message.type === "saveMyDay") {
+    void controller.saveMyDay();
+    return;
+  }
   if (message.type === "newChat") {
     void controller.newChat();
     return;
@@ -542,6 +934,19 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** Save sections in file order, with card titles, for the Saved card. */
+function savedSections(sections: SaveSections): SavedSection[] {
+  const order: SaveSection[] = ["project", "log", "tricks", "good-for", "me"];
+  const cards: SavedSection[] = [];
+  for (const key of order) {
+    const text = sections[key];
+    if (text !== undefined) {
+      cards.push({ title: SAVE_TITLES[key], text });
+    }
+  }
+  return cards;
 }
 
 function readVersion(extensionUri: vscode.Uri): string {

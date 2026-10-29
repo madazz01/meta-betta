@@ -2,8 +2,8 @@
 // session. All file access goes through BrainFs so tests use a fake.
 
 import { randomBytes } from "node:crypto";
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 export interface BrainFs {
   exists(path: string): Promise<boolean>;
@@ -475,6 +475,113 @@ export function catchUpGreeting(now: Date, meMd: string | undefined): string {
   return name
     ? `Good ${part} ${name}, hold on a sec while I catch up…`
     : `Good ${part}, hold on a sec while I catch up…`;
+}
+
+export type SaveSection = "project" | "log" | "tricks" | "good-for" | "me";
+
+export type SaveSections = Partial<Record<SaveSection, string>>;
+
+/**
+ * Split a save reply into its ## sections. Unknown headings are skipped,
+ * empty sections are dropped, repeated sections are joined. Empty when the
+ * reply has nothing worth filing.
+ */
+export function splitSaveReply(text: string): SaveSections {
+  const sections: SaveSections = {};
+  let current: SaveSection | undefined;
+  let lines: string[] = [];
+  const flush = () => {
+    if (current === undefined) {
+      return;
+    }
+    const body = lines.join("\n").trim();
+    if (body !== "") {
+      const previous = sections[current];
+      sections[current] = previous === undefined ? body : `${previous}\n\n${body}`;
+    }
+  };
+  for (const line of text.split("\n")) {
+    const heading = line.match(/^##\s+(.+?)\s*$/);
+    if (heading) {
+      flush();
+      current = saveSectionName(heading[1] ?? "");
+      lines = [];
+    } else if (current !== undefined) {
+      lines.push(line);
+    }
+  }
+  flush();
+  return sections;
+}
+
+function saveSectionName(heading: string): SaveSection | undefined {
+  switch (heading.toLowerCase().replace(/[^a-z]/g, "")) {
+    case "project":
+      return "project";
+    case "log":
+      return "log";
+    case "tricks":
+      return "tricks";
+    case "goodfor":
+      return "good-for";
+    case "me":
+      return "me";
+    default:
+      return undefined;
+  }
+}
+
+/** "2:15pm" for the status line after a quick save. */
+export function formatSaveTime(now: Date): string {
+  const hour24 = now.getHours();
+  const meridiem = hour24 < 12 ? "am" : "pm";
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${pad(now.getMinutes())}${meridiem}`;
+}
+
+/**
+ * Copy brain/ to <backupFolder>/<workspace name>/brain/, replacing the old
+ * copy. Throws when the backup folder is missing or not writable; the caller
+ * says so in one plain line and carries on.
+ */
+export async function backupBrain(root: string, backupFolder: string): Promise<void> {
+  await stat(backupFolder);
+  const parent = join(backupFolder, basename(root));
+  await mkdir(parent, { recursive: true });
+  const target = join(parent, "brain");
+  await rm(target, { recursive: true, force: true });
+  await cp(join(root, "brain"), target, { recursive: true });
+}
+
+/**
+ * Live session labels: window id -> last heartbeat ms. Two windows on one
+ * folder share storage, so a fresh window adopts the stored label only when
+ * no live window holds it — otherwise it keeps its own id and saves under
+ * its own label.
+ */
+export type LiveLabels = Record<string, number>;
+
+/** A heartbeat counts as live for two minutes (written every minute). */
+export const LIVE_LABEL_TTL_MS = 120_000;
+
+/** Validate stored live labels; anything else is forgotten. */
+export function cleanLiveLabels(value: unknown): LiveLabels {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const kept: LiveLabels = {};
+  for (const [id, at] of Object.entries(value as Record<string, unknown>)) {
+    if (id.trim() !== "" && typeof at === "number" && Number.isFinite(at)) {
+      kept[id] = at;
+    }
+  }
+  return kept;
+}
+
+/** True when another window holds this label with a fresh heartbeat. */
+export function isLabelTaken(storedId: string, live: LiveLabels, nowMs: number): boolean {
+  const at = live[storedId];
+  return at !== undefined && nowMs - at < LIVE_LABEL_TTL_MS;
 }
 
 /** "Today, 2:15pm", "Yesterday" or "28 Oct". */

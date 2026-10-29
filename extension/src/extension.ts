@@ -10,7 +10,16 @@ let brainProvider: BrainViewProvider | undefined;
 let brainSideProvider: BrainViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  controller = new ChatController(context.extensionUri, context.workspaceState);
+  controller = new ChatController(context.extensionUri, context.workspaceState, (files) => {
+    for (const provider of [brainProvider, brainSideProvider]) {
+      if (provider) {
+        void provider.refresh().then(
+          () => provider.flash(files),
+          () => undefined,
+        );
+      }
+    }
+  });
   viewProvider = new ChatViewProvider(context.extensionUri, controller, () => {
     if (controller) {
       openChatPanel(context.extensionUri, controller);
@@ -38,6 +47,9 @@ export function activate(context: vscode.ExtensionContext): void {
       } else if (controller) {
         openChatPanel(context.extensionUri, controller);
       }
+    }),
+    vscode.commands.registerCommand("metaBetta.saveMyDay", () => {
+      void controller?.saveMyDay();
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("metaBetta.openIn")) {

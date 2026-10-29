@@ -15,6 +15,7 @@ import type {
 } from "@muse-code/sdk";
 import type { ApprovalRequestParams, ItemDeltaParams } from "@muse-code/sdk/dist/src/msp.js";
 import { stripBackgroundPrefix } from "../brain/brain.js";
+import { isSavePrompt } from "../brain/prompts.js";
 import { approvalCard, safestChoiceId } from "../lib/approvals.js";
 import { historyEvent, reasoningText, toolRowText } from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
@@ -389,6 +390,7 @@ export class MuseHost {
 
   private loadHistory(session: HostSession): number {
     let count = 0;
+    let skippingSave = false;
     for (const item of session.fold.items.list()) {
       const event = historyEvent({
         kind: String(item.kind),
@@ -407,8 +409,17 @@ export class MuseHost {
         if (!text) {
           continue;
         }
+        // Save turns were filed into brain/ already; replaying the prompt
+        // and its raw reply would just be noise.
+        skippingSave = isSavePrompt(text);
+        if (skippingSave) {
+          continue;
+        }
         this.emit({ type: "user", text });
       } else {
+        if (skippingSave && event.type === "assistant") {
+          continue;
+        }
         this.emit(event);
       }
       count += 1;

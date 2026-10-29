@@ -33,10 +33,27 @@
         }
       }
 
+      function flashCards(files) {
+        for (var i = 0; i < files.length; i += 1) {
+          var card = cardsEl.querySelector('[data-file="' + files[i] + '"]');
+          if (!card) {
+            continue;
+          }
+          card.classList.remove("flash");
+          // Restart the highlight when saves land close together.
+          void card.offsetWidth;
+          card.classList.add("flash");
+          setTimeout(function (el) {
+            el.classList.remove("flash");
+          }, 1500, card);
+        }
+      }
+
       function renderCard(card) {
         var button = document.createElement("button");
         button.type = "button";
         button.className = "brain-card";
+        button.setAttribute("data-file", card.file);
         var title = document.createElement("span");
         title.className = "brain-title";
         title.textContent = card.title;
@@ -64,6 +81,8 @@
           showCards(message.cards);
         } else if (message.type === "brainStatus" && typeof message.text === "string") {
           showStatus(message.text);
+        } else if (message.type === "brainFlash" && Array.isArray(message.files)) {
+          flashCards(message.files);
         }
       });
     })();

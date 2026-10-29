@@ -51,6 +51,13 @@ export class BrainViewProvider implements vscode.WebviewViewProvider {
     void this.refresh();
   }
 
+  /** Briefly highlight the cards for these brain files (after a save). */
+  public flash(files: string[]): void {
+    if (this.view && files.length > 0) {
+      void this.view.webview.postMessage({ type: "brainFlash", files });
+    }
+  }
+
   public async refresh(): Promise<void> {
     const view = this.view;
     if (!view) {

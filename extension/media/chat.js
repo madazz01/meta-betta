@@ -10,6 +10,7 @@
   const input = document.getElementById("input");
   const sendButton = document.getElementById("send");
   const newChatButton = document.getElementById("new-chat");
+  const saveDayButton = document.getElementById("save-day");
   const sessionLabelButton = document.getElementById("session-label");
   const noFolderEl = document.getElementById("no-folder");
   const openFolderButton = document.getElementById("open-folder");
@@ -171,6 +172,41 @@
     }
   }
 
+  function addSaved(message) {
+    hideEmptyState();
+    const card = document.createElement("div");
+    card.className = "saved";
+    const title = document.createElement("p");
+    title.className = "saved-title";
+    title.textContent = message.text;
+    card.appendChild(title);
+    if (typeof message.backup === "string" && message.backup) {
+      const backup = document.createElement("p");
+      backup.className = "saved-backup";
+      backup.textContent = message.backup;
+      card.appendChild(backup);
+    }
+    if (Array.isArray(message.sections)) {
+      for (const section of message.sections) {
+        if (!section || typeof section.title !== "string" || typeof section.text !== "string") {
+          continue;
+        }
+        const details = document.createElement("details");
+        details.className = "saved-section";
+        const summary = document.createElement("summary");
+        summary.textContent = section.title;
+        const body = document.createElement("div");
+        body.className = "saved-text";
+        body.innerHTML = renderReply(section.text);
+        details.appendChild(summary);
+        details.appendChild(body);
+        card.appendChild(details);
+      }
+    }
+    messagesEl.appendChild(card);
+    scrollToBottom();
+  }
+
   function addNotice(message) {
     hideEmptyState();
     const notice = document.createElement("div");
@@ -220,6 +256,10 @@
 
   newChatButton.addEventListener("click", () => {
     vscode.postMessage({ type: "newChat" });
+  });
+
+  saveDayButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "saveMyDay" });
   });
 
   sessionLabelButton.addEventListener("click", () => {
@@ -305,6 +345,11 @@
       case "notice":
         if (typeof message.text === "string") {
           addNotice(message);
+        }
+        break;
+      case "saved":
+        if (typeof message.text === "string") {
+          addSaved(message);
         }
         break;
       case "turn":
