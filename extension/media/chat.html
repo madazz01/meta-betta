@@ -11,9 +11,9 @@
   <main id="chat">
     <header id="topbar">
       <button id="session-label" class="label-btn" type="button" title="Rename this chat">…</button>
-      <button id="new-chat" class="btn small" type="button">New chat</button>
-      <button id="save-day" class="btn small" type="button" title="Write what happened into the brain">💾 Save my day</button>
-      <button id="undo-last" class="btn small" type="button" title="Nothing to undo" disabled>↩ Undo</button>
+      <button id="new-chat" class="icon-btn" type="button" title="New chat">+</button>
+      <button id="save-day" class="icon-btn" type="button" title="Save my day: write what happened into the brain">💾</button>
+      <button id="undo-last" class="icon-btn" type="button" title="Nothing to undo" disabled>↩</button>
       <button id="skip-welcome" class="btn small" type="button" hidden>Skip</button>
     </header>
     <div id="goal" hidden></div>
@@ -23,15 +23,10 @@
     </div>
     <div id="messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
     <p id="empty-state">Morning! What are we working on?</p>
-    <div id="chips">
-      <button class="chip" type="button" data-chip="goal" title="Pin a goal for this chat, with a progress bar">🎯 <span class="chip-label">Goal</span></button>
-      <button class="chip" type="button" data-chip="side" title="Ask something off-topic without muddling the main job">💬 <span class="chip-label">Side question</span></button>
-      <button class="chip" type="button" data-chip="fork" title="Try another way from here, keeping this chat">🔀 <span class="chip-label">Fork</span></button>
-      <button class="chip" type="button" data-chip="usage" title="See what this chat is costing">📊 <span class="chip-label">Usage</span></button>
-    </div>
     <div id="slash-menu" hidden></div>
     <div id="composer-wrap">
       <form id="composer">
+        <button id="plus" type="button" title="Commands (same as /)">+</button>
         <textarea id="input" rows="2" placeholder="Type a message…" aria-label="Type a message"></textarea>
         <button id="effort" type="button" title="Thinking effort: Normal — click to change">⚡ Normal</button>
         <button id="send" type="submit">Send</button>

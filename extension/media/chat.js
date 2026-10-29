@@ -19,9 +19,15 @@
   const goalEl = document.getElementById("goal");
   const slashMenuEl = document.getElementById("slash-menu");
   const effortButton = document.getElementById("effort");
+  const plusButton = document.getElementById("plus");
+
+  // A reply shows its time only after a long gap in the conversation.
+  const LONG_GAP_MS = 30 * 60 * 1000;
 
   let running = false;
   let catchingUpEl = null;
+  let turnEl = null;
+  let lastStampAt = 0;
   const assistantEls = new Map();
   const thinkingEls = new Map();
   const toolEls = new Map();
@@ -46,6 +52,25 @@
 
   function setStatus(text) {
     statusEl.textContent = text;
+  }
+
+  // One turn's steps share a container, so the timeline can join them with
+  // one faint line. Your messages and day dividers always start fresh.
+  function openTurn() {
+    turnEl = document.createElement("div");
+    turnEl.className = "turn";
+    messagesEl.appendChild(turnEl);
+  }
+
+  function closeTurn() {
+    turnEl = null;
+  }
+
+  function stepParent() {
+    if (!turnEl) {
+      openTurn();
+    }
+    return turnEl;
   }
 
   // The message box stays disabled while a picker is up.
@@ -80,8 +105,8 @@
     hideEmptyState();
     if (!catchingUpEl) {
       catchingUpEl = document.createElement("div");
-      catchingUpEl.className = "bubble assistant catching-up";
-      messagesEl.appendChild(catchingUpEl);
+      catchingUpEl.className = "catching-up";
+      stepParent().appendChild(catchingUpEl);
     }
     catchingUpEl.textContent = text;
     scrollToBottom();
@@ -103,59 +128,59 @@
     return fallback.innerHTML;
   }
 
-  function addUserBubble(text, time) {
+  function addUserMessage(text, time) {
     hideEmptyState();
-    const bubble = document.createElement("div");
-    bubble.className = "bubble user";
-    const body = document.createElement("div");
-    body.className = "user-text";
-    body.textContent = text;
-    bubble.appendChild(body);
+    closeTurn();
     if (typeof time === "string" && time) {
       const clock = document.createElement("div");
-      clock.className = "msg-time";
+      clock.className = "user-time";
       clock.textContent = time;
-      bubble.appendChild(clock);
+      messagesEl.appendChild(clock);
     }
-    messagesEl.appendChild(bubble);
+    lastStampAt = Date.now();
+    const box = document.createElement("div");
+    box.className = "user-msg";
+    box.textContent = text;
+    messagesEl.appendChild(box);
     scrollToBottom();
   }
 
   function upsertAssistant(id, text, time) {
     hideEmptyState();
     dropCatchingUp();
-    let bubble = assistantEls.get(id);
-    if (!bubble) {
-      bubble = document.createElement("div");
-      bubble.className = "bubble assistant";
+    let reply = assistantEls.get(id);
+    if (!reply) {
+      reply = document.createElement("div");
+      reply.className = "assistant-reply";
+      if (typeof time === "string" && time && Date.now() - lastStampAt > LONG_GAP_MS) {
+        lastStampAt = Date.now();
+        const clock = document.createElement("div");
+        clock.className = "reply-time";
+        clock.textContent = time;
+        reply.appendChild(clock);
+      }
       const body = document.createElement("div");
       body.className = "assistant-text";
       const meta = document.createElement("div");
       meta.className = "msg-meta";
-      const clock = document.createElement("div");
-      clock.className = "msg-time";
       const fork = document.createElement("button");
       fork.type = "button";
       fork.className = "fork-btn";
-      fork.textContent = "🔀 Try another way";
+      fork.textContent = "Try another way";
       fork.title = "Try another way from here";
       fork.addEventListener("click", () => {
         vscode.postMessage({ type: "forkMessage", id });
       });
-      meta.appendChild(clock);
       meta.appendChild(fork);
-      bubble.appendChild(body);
-      bubble.appendChild(meta);
-      messagesEl.appendChild(bubble);
-      assistantEls.set(id, bubble);
+      reply.appendChild(body);
+      reply.appendChild(meta);
+      stepParent().appendChild(reply);
+      assistantEls.set(id, reply);
     }
     const nudge = findNudge(text);
     const bodyText = nudge ? text.replace(nudge.paragraph, "").trim() : text;
-    bubble.querySelector(".assistant-text").innerHTML = renderReply(bodyText);
-    bubble.style.display = nudge && !bodyText ? "none" : "";
-    if (typeof time === "string" && time) {
-      bubble.querySelector(".msg-time").textContent = time;
-    }
+    reply.querySelector(".assistant-text").innerHTML = renderReply(bodyText);
+    reply.style.display = nudge && !bodyText ? "none" : "";
     if (nudge) {
       upsertNudgeCard(id, nudge);
     }
@@ -203,7 +228,7 @@
       buttons.appendChild(notnowButton);
       card.appendChild(body);
       card.appendChild(buttons);
-      messagesEl.appendChild(card);
+      stepParent().appendChild(card);
       nudgeEls.set(id, card);
     }
     if (!card.dataset.answered) {
@@ -231,6 +256,7 @@
 
   function addDayDivider(label) {
     hideEmptyState();
+    closeTurn();
     const divider = document.createElement("div");
     divider.className = "day-divider";
     divider.textContent = `── ${label} ──`;
@@ -244,7 +270,7 @@
     if (!card) {
       card = document.createElement("div");
       card.className = "card";
-      messagesEl.appendChild(card);
+      stepParent().appendChild(card);
       cardEls.set(message.id, card);
     }
     card.replaceChildren();
@@ -432,20 +458,23 @@
 
   function upsertThinking(id, text) {
     hideEmptyState();
-    let details = thinkingEls.get(id);
-    if (!details) {
-      details = document.createElement("details");
+    let entry = thinkingEls.get(id);
+    if (!entry) {
+      const details = document.createElement("details");
       details.className = "thinking";
       const summary = document.createElement("summary");
-      summary.textContent = "Thinking…";
+      summary.textContent = "Thought";
       const body = document.createElement("div");
       body.className = "thinking-text";
       details.appendChild(summary);
       details.appendChild(body);
-      messagesEl.appendChild(details);
-      thinkingEls.set(id, details);
+      stepParent().appendChild(details);
+      entry = { el: details, started: Date.now() };
+      thinkingEls.set(id, entry);
     }
-    details.querySelector(".thinking-text").textContent = text;
+    entry.el.querySelector(".thinking-text").textContent = text;
+    const elapsed = Math.floor((Date.now() - entry.started) / 1000);
+    entry.el.querySelector("summary").textContent = elapsed >= 1 ? `Thought for ${elapsed}s` : "Thought";
     scrollToBottom();
   }
 
@@ -455,7 +484,7 @@
     if (!row) {
       row = document.createElement("div");
       row.className = "tool";
-      messagesEl.appendChild(row);
+      stepParent().appendChild(row);
       toolEls.set(id, row);
     }
     row.textContent = text;
@@ -690,7 +719,7 @@
         card.appendChild(details);
       }
     }
-    messagesEl.appendChild(card);
+    stepParent().appendChild(card);
     scrollToBottom();
   }
 
@@ -709,7 +738,7 @@
         vscode.postMessage({ type: "undo", id: message.id });
       });
       wrap.appendChild(button);
-      messagesEl.appendChild(wrap);
+      stepParent().appendChild(wrap);
       undoEls.set(message.id, wrap);
     }
     scrollToBottom();
@@ -765,7 +794,7 @@
     details.appendChild(summary);
     details.appendChild(more);
     card.appendChild(details);
-    messagesEl.appendChild(card);
+    stepParent().appendChild(card);
     scrollToBottom();
     outlineForAWhile(saveDayButton);
   }
@@ -788,7 +817,7 @@
       });
       notice.appendChild(copyButton);
     }
-    messagesEl.appendChild(notice);
+    stepParent().appendChild(notice);
     scrollToBottom();
   }
 
@@ -807,6 +836,8 @@
 
   function clearChat() {
     dropCatchingUp();
+    closeTurn();
+    lastStampAt = 0;
     messagesEl.replaceChildren();
     assistantEls.clear();
     thinkingEls.clear();
@@ -845,19 +876,10 @@
     vscode.postMessage({ type: "openFolder" });
   });
 
-  document.querySelectorAll("#chips .chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      const kind = chip.getAttribute("data-chip");
-      if (kind === "goal") {
-        vscode.postMessage({ type: "goalAsk" });
-      } else if (kind === "side") {
-        vscode.postMessage({ type: "sideBox" });
-      } else if (kind === "fork") {
-        vscode.postMessage({ type: "forkNow" });
-      } else if (kind === "usage") {
-        vscode.postMessage({ type: "usageNow" });
-      }
-    });
+  plusButton.addEventListener("click", () => {
+    input.value = "/";
+    input.focus();
+    updateSlashMenu();
   });
 
   effortButton.addEventListener("click", () => {
@@ -934,7 +956,7 @@
     switch (message.type) {
       case "user":
         if (typeof message.text === "string") {
-          addUserBubble(message.text, message.time);
+          addUserMessage(message.text, message.time);
         }
         break;
       case "assistant":
@@ -1049,6 +1071,11 @@
         break;
       case "turn":
         if (message.state === "started" || message.state === "done") {
+          if (message.state === "started") {
+            openTurn();
+          } else {
+            closeTurn();
+          }
           setRunning(message.state === "started");
         }
         break;
