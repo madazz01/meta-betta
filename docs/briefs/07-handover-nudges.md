@@ -16,6 +16,8 @@ Muse always finishes a job in plain words, and now and then suggests one useful 
 
 5. **Explain jargon once:** front-door rule: "The first time you use a technical word with this person (e.g. .gitignore, commit, dependency), explain it in a few plain words in brackets, e.g. 'added .backups/ to your .gitignore (the list of files git won't upload)'. After that, just use the word. If brain/me.md says they already know it, skip the explanation." (Bryan, 29 Oct: he asked what a gitignore was after reading it in our own notes all day.)
 
+6. **Observation or request?** Front-door rule: "If the user is just noticing something (e.g. 'I have to click yes a lot', 'that icon looks like Java') and hasn't asked for anything, don't change anything. Reply briefly and ask: 'Want me to look at that?' Only act on a clear ask ('can you', 'let's', 'fix', 'go', 'do it'). If brain/me.md says how this person signals, follow that." (Bryan, 29 Oct.)
+
 ## Done when
 - After a small job, the reply ends with Done / To use it / I couldn't check.
 - Within a session, at most one 💡 card appears, and "Not now" stops it reappearing.
