@@ -156,15 +156,56 @@ const READONLY_PAIRS: Record<string, string[]> = {
 
 const REDIRECT_TOKENS = new Set([">", ">>", "out-file", "set-content", "add-content", "tee-object"]);
 
+/** Variables, home shortcuts, escapes and wildcards: never auto-allowed. */
+const DYNAMIC_TOKEN = /[$%~`*?[]/;
+
+/** Words that write, matched case-insensitively against the full command. */
+const WRITE_WORDS = ["out-file", "set-content", "add-content", "tee-object", "--output"];
+
+/**
+ * True when the full command text may write: a `>` anywhere (even quoted —
+ * conservative, since Muse strips redirection from stage argv) or an output
+ * word. When true, nothing in the command auto-allows.
+ */
+export function commandHasWrite(command: string | undefined): boolean {
+  if (!command) {
+    return false;
+  }
+  if (command.includes(">")) {
+    return true;
+  }
+  const lower = command.toLowerCase();
+  return WRITE_WORDS.some((word) => lower.includes(word));
+}
+
+/** Read-only commands that take file paths: every path must stay in the workspace. */
+const FILE_READERS = new Set([
+  "get-content",
+  "cat",
+  "type",
+  "select-string",
+  "get-item",
+  "get-childitem",
+  "ls",
+  "dir",
+  "test-path",
+]);
+
 /**
  * True when the stage only reads: a read-only command with no output
- * redirection. Pipes and `;` are safe by construction: every stage of a
- * pipeline or list is approved separately, so a sneaky `Get-Content f |
- * Evil` still asks for its Evil stage.
+ * redirection and no dynamic tokens ($vars, ~, wildcards). Pipes and `;`
+ * are safe by construction: every stage of a pipeline or list is approved
+ * separately, so a sneaky `Get-Content f | Evil` still asks for its Evil
+ * stage. File readers additionally keep every path inside the workspace.
  */
-export function isReadOnlyStage(argv: string[]): boolean {
+export function isReadOnlyStage(argv: string[], workspaceRoot: string): boolean {
   if (argv.length === 0) {
     return false;
+  }
+  for (const token of argv.slice(1)) {
+    if (DYNAMIC_TOKEN.test(token)) {
+      return false;
+    }
   }
   for (const token of argv) {
     if (REDIRECT_TOKENS.has(token.toLowerCase())) {
@@ -173,27 +214,41 @@ export function isReadOnlyStage(argv: string[]): boolean {
   }
   const name = commandName(argv[0] ?? "");
   const pair = READONLY_PAIRS[name];
-  if (pair) {
-    return pair.includes((argv[1] ?? "").toLowerCase());
+  const listed = pair ? pair.includes((argv[1] ?? "").toLowerCase()) : READONLY_SINGLE.has(name);
+  if (!listed || !FILE_READERS.has(name)) {
+    return listed;
   }
-  return READONLY_SINGLE.has(name);
+  return argv
+    .slice(1)
+    .every(
+      (token) => token.startsWith("-") || token.startsWith("/") || insideDir(workspaceRoot, workspaceRoot, token),
+    );
 }
 
 export type BackupAction = { kind: "mkdir" } | { kind: "copy"; files: string[] };
 
 /**
  * A rule-9 backup step, or undefined (the picker asks). New-Item needs
- * -ItemType Directory with every path inside <workspace>\.backups; Copy-Item
- * needs its destination inside .backups and every path inside the workspace.
- * Conservative: anything unrecognized refuses and the picker asks.
+ * -ItemType Directory (bare mkdir counts too) with every path inside
+ * <workspace>\.backups; Copy-Item needs its destination inside .backups and
+ * every path inside the workspace. Dynamic tokens ($vars, ~, wildcards)
+ * always refuse. Conservative: anything unrecognized refuses.
  */
 export function backupAction(argv: string[], workspaceRoot: string): BackupAction | undefined {
   if (argv.length === 0) {
     return undefined;
   }
+  for (const token of argv.slice(1)) {
+    if (DYNAMIC_TOKEN.test(token)) {
+      return undefined;
+    }
+  }
   const name = commandName(argv[0] ?? "");
   if (name === "new-item") {
-    return backupMkdir(argv, workspaceRoot);
+    return backupMkdir(argv, workspaceRoot, true);
+  }
+  if (name === "mkdir") {
+    return backupMkdir(argv, workspaceRoot, false);
   }
   if (name === "copy-item") {
     return backupCopy(argv, workspaceRoot);
@@ -211,16 +266,25 @@ function pathArgs(argv: string[], excused: (token: string) => boolean): string[]
   });
 }
 
-function backupMkdir(argv: string[], workspaceRoot: string): BackupAction | undefined {
-  let directory = false;
-  for (let index = 1; index < argv.length; index += 1) {
-    const flag = (argv[index] ?? "").toLowerCase();
-    if ((flag === "-itemtype" || flag === "-type") && (argv[index + 1] ?? "").toLowerCase() === "directory") {
-      directory = true;
+function backupMkdir(
+  argv: string[],
+  workspaceRoot: string,
+  requireItemType: boolean,
+): BackupAction | undefined {
+  if (requireItemType) {
+    let directory = false;
+    for (let index = 1; index < argv.length; index += 1) {
+      const flag = (argv[index] ?? "").toLowerCase();
+      if (
+        (flag === "-itemtype" || flag === "-type") &&
+        (argv[index + 1] ?? "").toLowerCase() === "directory"
+      ) {
+        directory = true;
+      }
     }
-  }
-  if (!directory) {
-    return undefined;
+    if (!directory) {
+      return undefined;
+    }
   }
   const backups = win32.join(workspaceRoot, ".backups");
   const paths = pathArgs(argv, (token) => token.toLowerCase() === "directory");

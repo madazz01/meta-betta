@@ -37,6 +37,7 @@ import {
   backedUpRow,
   backupAction,
   choiceHint,
+  commandHasWrite,
   currentStage,
   describeStage,
   findStageChoice,
@@ -1056,14 +1057,25 @@ export class MuseHost {
         return this.answerQuietly(approvalId, remembered);
       }
       // The remembered answer isn't offered for this stage: ask again.
-    } else if (shell && stage && isReadOnlyStage(argv)) {
+    } else if (
+      shell &&
+      stage &&
+      this.workspaceRoot !== "" &&
+      !commandHasWrite(request.subject.command) &&
+      isReadOnlyStage(argv, this.workspaceRoot)
+    ) {
       const once = findStageChoice(request.availableChoices, "once");
       if (once !== undefined) {
         pending.lookedAt.push(stageLabel(argv));
         this.armQuietFlush(approvalId, pending);
         return this.answerQuietly(approvalId, once);
       }
-    } else if (shell && stage && this.workspaceRoot !== "") {
+    } else if (
+      shell &&
+      stage &&
+      this.workspaceRoot !== "" &&
+      !commandHasWrite(request.subject.command)
+    ) {
       const backup = backupAction(argv, this.workspaceRoot);
       if (backup) {
         const once = findStageChoice(request.availableChoices, "once");

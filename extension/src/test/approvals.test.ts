@@ -7,6 +7,7 @@ import {
   backedUpRow,
   backupAction,
   choiceHint,
+  commandHasWrite,
   commandName,
   currentStage,
   describeStage,
@@ -131,39 +132,81 @@ describe("commandName", () => {
   });
 });
 
+describe("commandHasWrite", () => {
+  it("spots redirection and output words, conservatively", () => {
+    assert.equal(commandHasWrite("Write-Output hello > x.txt"), true);
+    assert.equal(commandHasWrite('Write-Output "a > b"'), true);
+    assert.equal(commandHasWrite("Get-Date | Out-File f.txt"), true);
+    assert.equal(commandHasWrite("dir | tee-object f.txt"), true);
+    assert.equal(commandHasWrite("tool --output f.txt"), true);
+    assert.equal(commandHasWrite("type f.txt | Set-Content g.txt"), true);
+    assert.equal(commandHasWrite("Get-ChildItem | Add-Content f.txt"), true);
+  });
+
+  it("passes clean commands", () => {
+    assert.equal(commandHasWrite("Get-ChildItem"), false);
+    assert.equal(commandHasWrite("node --version"), false);
+    assert.equal(commandHasWrite(undefined), false);
+    assert.equal(commandHasWrite(""), false);
+  });
+});
+
 describe("isReadOnlyStage", () => {
+  const root = "C:\\mb-test";
+
   it("allows the read-only list, case-insensitively", () => {
-    assert.equal(isReadOnlyStage(["Get-Date"]), true);
-    assert.equal(isReadOnlyStage(["get-childitem", "-Path", "."]), true);
-    assert.equal(isReadOnlyStage(["C:\\Windows\\System32\\more.com", "f.txt"]), false);
-    assert.equal(isReadOnlyStage(["ls", "-la"]), true);
-    assert.equal(isReadOnlyStage(["Select-Object", "Name"]), true);
-    assert.equal(isReadOnlyStage(["echo", "hello"]), true);
+    assert.equal(isReadOnlyStage(["Get-Date"], root), true);
+    assert.equal(isReadOnlyStage(["get-childitem", "-Path", "."], root), true);
+    assert.equal(isReadOnlyStage(["C:\\Windows\\System32\\more.com", "f.txt"], root), false);
+    assert.equal(isReadOnlyStage(["ls", "-la"], root), true);
+    assert.equal(isReadOnlyStage(["Select-Object", "Name"], root), true);
+    assert.equal(isReadOnlyStage(["echo", "hello"], root), true);
   });
 
   it("matches git, node and npm only as pairs", () => {
-    assert.equal(isReadOnlyStage(["git", "status"]), true);
-    assert.equal(isReadOnlyStage(["git", "log", "--oneline"]), true);
-    assert.equal(isReadOnlyStage(["git", "diff", "HEAD"]), true);
-    assert.equal(isReadOnlyStage(["node", "--version"]), true);
-    assert.equal(isReadOnlyStage(["npm", "--version"]), true);
-    assert.equal(isReadOnlyStage(["git", "push"]), false);
-    assert.equal(isReadOnlyStage(["git"]), false);
-    assert.equal(isReadOnlyStage(["npm", "test"]), false);
-    assert.equal(isReadOnlyStage(["node", "script.js"]), false);
+    assert.equal(isReadOnlyStage(["git", "status"], root), true);
+    assert.equal(isReadOnlyStage(["git", "log", "--oneline"], root), true);
+    assert.equal(isReadOnlyStage(["git", "diff", "HEAD"], root), true);
+    assert.equal(isReadOnlyStage(["node", "--version"], root), true);
+    assert.equal(isReadOnlyStage(["npm", "--version"], root), true);
+    assert.equal(isReadOnlyStage(["git", "push"], root), false);
+    assert.equal(isReadOnlyStage(["git"], root), false);
+    assert.equal(isReadOnlyStage(["npm", "test"], root), false);
+    assert.equal(isReadOnlyStage(["node", "script.js"], root), false);
   });
 
   it("refuses anything with output redirection", () => {
-    assert.equal(isReadOnlyStage(["echo", "hi", ">", "f.txt"]), false);
-    assert.equal(isReadOnlyStage(["Get-ChildItem", ">>", "f.txt"]), false);
-    assert.equal(isReadOnlyStage(["Get-Date", "|", "Out-File", "f.txt"]), false);
-    assert.equal(isReadOnlyStage(["dir", "|", "Tee-Object", "f.txt"]), false);
-    assert.equal(isReadOnlyStage(["type", "f.txt", "|", "Set-Content", "g.txt"]), false);
+    assert.equal(isReadOnlyStage(["echo", "hi", ">", "f.txt"], root), false);
+    assert.equal(isReadOnlyStage(["Get-ChildItem", ">>", "f.txt"], root), false);
+    assert.equal(isReadOnlyStage(["Get-Date", "|", "Out-File", "f.txt"], root), false);
+    assert.equal(isReadOnlyStage(["dir", "|", "Tee-Object", "f.txt"], root), false);
+    assert.equal(isReadOnlyStage(["type", "f.txt", "|", "Set-Content", "g.txt"], root), false);
   });
 
   it("refuses writers and empties", () => {
-    assert.equal(isReadOnlyStage(["Remove-Item", "f.txt"]), false);
-    assert.equal(isReadOnlyStage([]), false);
+    assert.equal(isReadOnlyStage(["Remove-Item", "f.txt"], root), false);
+    assert.equal(isReadOnlyStage([], root), false);
+  });
+
+  it("refuses variables, home shortcuts, escapes and wildcards", () => {
+    assert.equal(isReadOnlyStage(["Get-Content", "$HOME", "\\.gitconfig"], root), false);
+    assert.equal(isReadOnlyStage(["Get-Content", "$HOME\\.gitconfig"], root), false);
+    assert.equal(isReadOnlyStage(["cat", "%USERPROFILE%\\.gitconfig"], root), false);
+    assert.equal(isReadOnlyStage(["type", "~/notes.txt"], root), false);
+    assert.equal(isReadOnlyStage(["cat", "`notes.txt"], root), false);
+    assert.equal(isReadOnlyStage(["ls", "*.txt"], root), false);
+    assert.equal(isReadOnlyStage(["dir", "file?.txt"], root), false);
+    assert.equal(isReadOnlyStage(["cat", "[abc].txt"], root), false);
+    assert.equal(isReadOnlyStage(["Get-Date", "$x"], root), false);
+  });
+
+  it("keeps file readers inside the workspace", () => {
+    assert.equal(isReadOnlyStage(["Get-Content", "notes.txt"], root), true);
+    assert.equal(isReadOnlyStage(["cat", "sub\\dir\\notes.txt"], root), true);
+    assert.equal(isReadOnlyStage(["Get-Content"], root), true);
+    assert.equal(isReadOnlyStage(["Get-Content", "C:\\Users\\x\\.ssh\\id_rsa"], root), false);
+    assert.equal(isReadOnlyStage(["cat", "..\\..\\secret"], root), false);
+    assert.equal(isReadOnlyStage(["Test-Path", "D:\\other\\x"], root), false);
   });
 });
 
@@ -179,6 +222,8 @@ describe("backupAction", () => {
       backupAction(["New-Item", ".backups\\today", "-ItemType", "Directory", "-Force"], root),
       { kind: "mkdir" },
     );
+    assert.deepEqual(backupAction(["mkdir", ".backups/today"], root), { kind: "mkdir" });
+    assert.equal(backupAction(["mkdir", "notes"], root), undefined);
   });
 
   it("allows a copy into .backups with the file names", () => {
@@ -222,6 +267,13 @@ describe("backupAction", () => {
   it("refuses file writes posing as the mkdir", () => {
     assert.equal(backupAction(["New-Item", "notes.txt"], root), undefined);
     assert.equal(backupAction(["New-Item", "-ItemType", "File", ".backups/x.txt"], root), undefined);
+  });
+
+  it("refuses dynamic tokens", () => {
+    assert.equal(backupAction(["New-Item", "-ItemType", "Directory", "$HOME/.backups"], root), undefined);
+    assert.equal(backupAction(["Copy-Item", "*.txt", ".backups/today"], root), undefined);
+    assert.equal(backupAction(["Copy-Item", "todo.txt", ".backups/$TODAY"], root), undefined);
+    assert.equal(backupAction(["mkdir", "~/.backups"], root), undefined);
   });
 
   it("ignores other commands", () => {

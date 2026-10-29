@@ -589,6 +589,44 @@ describe("approval picker", () => {
     assert.equal(fake.pickers.length, 1);
     await fake.host.dispose();
   });
+
+  it("asks when the full command redirects, though the stage looks clean", async () => {
+    const fake = fakeApprovalHost({ choiceId: "abort" });
+    await fake.host.prepare(process.cwd());
+    await fake.decide(
+      shellRequest(0, {
+        approvalId: "cmd-7",
+        command: "Write-Output hello > mb-probe.txt",
+        stages: [["Write-Output", "hello"]],
+      }),
+    );
+    assert.equal(fake.pickers.length, 1);
+    await fake.host.dispose();
+  });
+
+  it("asks for variable reads but auto-allows plain workspace reads", async () => {
+    const fake = fakeApprovalHost({ choiceId: "abort" });
+    await fake.host.prepare(process.cwd());
+    await fake.decide(
+      shellRequest(0, {
+        approvalId: "cmd-8",
+        command: "Get-Content $HOME\\.gitconfig",
+        stages: [["Get-Content", "$HOME", "\\.gitconfig"]],
+      }),
+    );
+    assert.equal(fake.pickers.length, 1);
+    await fake.decide(
+      shellRequest(0, {
+        approvalId: "cmd-9",
+        command: "Get-Content notes.txt",
+        stages: [["Get-Content", "notes.txt"]],
+      }),
+    );
+    assert.equal(fake.pickers.length, 1);
+    await fake.host.send("hi", process.cwd());
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: Get-Content"));
+    await fake.host.dispose();
+  });
 });
 
 interface ApprovalFake {
