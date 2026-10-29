@@ -12,9 +12,7 @@ Muse always finishes a job in plain words, and now and then suggests one useful 
 2. In the panel, render a 💡 nudge as a small card with [Show me] [Not now] buttons that send those answers back as the user's reply.
 3. Seed list of nudge ideas in `extension/src/brain/nudges.ts` (plain English, each with "when it's relevant"), included in the front door as hints, e.g.: read a screenshot/photo, turn a voice note into a list (Alt+V in Muse), write tests, explain an error in plain words, make a one-page HTML instead of a server, summarise a long file, find where something is used.
 
-4. **Worked-for line:** after every finished turn, a small grey line under the reply, like Muse CLI's: `Worked for 7m 58s · 12:06 PM · 29/Oct` (elapsed from send to finish; local time and date). Stopped turns say `Stopped after 1m 12s · …`. It is part of the chat history, so it replays on resume. Test the duration formatting (seconds, minutes, over an hour).
-
-5. **Times for scrolling back:** every message (yours and Muse's) shows a small, dim time under it (`9:41 AM`), and a day divider appears whenever the date changes between messages (`── Wed 29 Oct ──`). Times are stored with the history, so a resumed chat shows the real times, not the replay time. Test the divider logic (same day, next day, a gap of a week).
+4. **Times for scrolling back:** every message (yours and Muse's) shows a small, dim time under it (`9:41 AM`), and a day divider appears whenever the date changes between messages (`── Wed 29 Oct ──`). Times are stored with the history, so a resumed chat shows the real times, not the replay time. Test the divider logic (same day, next day, a gap of a week).
 
 ## Done when
 - After a small job, the reply ends with Done / To use it / I couldn't check.
