@@ -14,6 +14,8 @@ Muse always finishes a job in plain words, and now and then suggests one useful 
 
 4. **Times for scrolling back:** every message (yours and Muse's) shows a small, dim time under it (`9:41 AM`), and a day divider appears whenever the date changes between messages (`── Wed 29 Oct ──`). Times are stored with the history, so a resumed chat shows the real times, not the replay time. Test the divider logic (same day, next day, a gap of a week).
 
+5. **Explain jargon once:** front-door rule: "The first time you use a technical word with this person (e.g. .gitignore, commit, dependency), explain it in a few plain words in brackets, e.g. 'added .backups/ to your .gitignore (the list of files git won't upload)'. After that, just use the word. If brain/me.md says they already know it, skip the explanation." (Bryan, 29 Oct: he asked what a gitignore was after reading it in our own notes all day.)
+
 ## Done when
 - After a small job, the reply ends with Done / To use it / I couldn't check.
 - Within a session, at most one 💡 card appears, and "Not now" stops it reappearing.
