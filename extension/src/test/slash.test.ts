@@ -139,9 +139,10 @@ class FakeCtx implements SlashContext {
     return this.goalState;
   }
 
-  async sideAsk(question: string): Promise<string> {
+  async sideAsk(question: string, onProgress?: (line: string) => void): Promise<string> {
     this.maybeFail("sideAsk");
     this.calls.push(`sideAsk:${question}`);
+    onProgress?.("Chat opened");
     return this.sideAnswer;
   }
 
@@ -352,6 +353,20 @@ describe("slash runs", () => {
     ctx.failures.set("readUsage", new Error("boom"));
     await run("usage", ctx);
     assert.deepEqual(ctx.notices, [{ kind: "error", text: "Couldn't read usage: boom." }]);
+  });
+
+  it("/usage shows the account allowance when reported", async () => {
+    const ctx = new FakeCtx();
+    ctx.usage = {
+      today: { totalTokens: 0, usd: 0 },
+      weekly: { usedPercent: 45, resetsAtMs: new Date(2026, 10, 3, 9, 0).getTime() },
+      window: { usedPercent: 12, resetsAtMs: new Date(2026, 9, 30, 14, 15).getTime() },
+    };
+    await run("usage", ctx);
+    const body = ctx.cards[0]?.card.body ?? "";
+    assert.ok(body.includes("This week: 45% used"));
+    assert.ok(body.includes("Right now: 12% used"));
+    assert.ok(body.includes("2:15pm"));
   });
 
   it("/model lists with the current marked, and switches", async () => {

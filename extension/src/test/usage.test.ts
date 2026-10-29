@@ -4,6 +4,7 @@ import {
   cleanDayUsage,
   formatCost,
   formatStatusBar,
+  formatStatusBarToday,
   formatTokens,
   recordDayUsage,
   sumDayUsage,
@@ -58,7 +59,7 @@ describe("day usage", () => {
       totalTokens: 300,
       usd: 0.02,
     });
-    assert.deepEqual(sumDayUsage(both), { totalTokens: 450, usd: 0.03 });
+    assert.deepEqual(sumDayUsage(both, "2026-10-30"), { totalTokens: 450, usd: 0.03 });
     // A newer total for s1 replaces the old one, not added twice.
     const updated = recordDayUsage(both, "2026-10-30", "s1", {
       promptTokens: 1000,
@@ -66,7 +67,7 @@ describe("day usage", () => {
       totalTokens: 1500,
       usd: 0.1,
     });
-    assert.deepEqual(sumDayUsage(updated), { totalTokens: 1800, usd: 0.12 });
+    assert.deepEqual(sumDayUsage(updated, "2026-10-30"), { totalTokens: 1800, usd: 0.12 });
   });
 
   it("starts over on a new day", () => {
@@ -80,7 +81,21 @@ describe("day usage", () => {
       outputTokens: 5,
       totalTokens: 15,
     });
-    assert.deepEqual(sumDayUsage(next), { totalTokens: 15, usd: 0 });
+    assert.deepEqual(sumDayUsage(next, "2026-10-31"), { totalTokens: 15, usd: 0 });
+  });
+
+  it("ignores a stale day", () => {
+    const day = recordDayUsage(undefined, "2026-10-30", "s1", {
+      promptTokens: 100,
+      outputTokens: 50,
+      totalTokens: 150,
+    });
+    assert.deepEqual(sumDayUsage(day, "2026-10-31"), { totalTokens: 0, usd: 0 });
+  });
+
+  it("words the stored today for the status bar", () => {
+    assert.equal(formatStatusBarToday(45200), "☕ Muse · 45.2k today");
+    assert.equal(formatStatusBarToday(0), "☕ Muse");
   });
 
   it("keys days locally", () => {

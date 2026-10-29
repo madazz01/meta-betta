@@ -21,6 +21,7 @@ import type {
 import { formatSaveTime, stripBackgroundPrefix } from "../brain/brain.js";
 import { isSavePrompt } from "../brain/prompts.js";
 import type {
+  AllowanceSlice,
   EffortLevel,
   GoalInfo,
   ModelRow,
@@ -78,6 +79,8 @@ export interface MuseHostOptions {
   createHost?: () => Promise<{ client: HostClient; connection: HostConnection }>;
   /** Saved session id storage; without it every start is a fresh session. */
   sessionStore?: SessionStore;
+  /** Step-by-step notes for the output channel (side runs, recaps). */
+  log?: (message: string) => void;
 }
 
 /** The slice of the SDK client MuseHost drives (real or fake). */
@@ -308,7 +311,9 @@ export class MuseHost {
       return 0;
     }
     this.historyLoadedFor = session.sessionId;
-    return this.loadHistory(session);
+    const shown = this.loadHistory(session);
+    this.emit({ type: "status", text: "Ready" });
+    return shown;
   }
 
   /**
@@ -368,12 +373,18 @@ export class MuseHost {
     return rows;
   }
 
-  /** The provider's usage window reset, when the server reports one. */
-  public async readSubscription(workspaceRoot: string): Promise<{ resetAtMs?: number }> {
+  /** The account's allowance slices, when the server reports them. */
+  public async readSubscription(
+    workspaceRoot: string,
+  ): Promise<{ weekly?: AllowanceSlice; window?: AllowanceSlice }> {
     const { connection } = await this.useConnection(workspaceRoot);
     const usage = asRecord((await connection.request("usage/read")).usage);
-    const resetAtMs = usage ? asNumber(asRecord(usage.window)?.resetsAtMs) : undefined;
-    return resetAtMs === undefined ? {} : { resetAtMs };
+    const weekly = usage ? parseAllowanceSlice(usage.weekly) : undefined;
+    const window = usage ? parseAllowanceSlice(usage.window) : undefined;
+    return {
+      ...(weekly ? { weekly } : {}),
+      ...(window ? { window } : {}),
+    };
   }
 
   /** The model catalog, with the session's model flagged. */
@@ -452,8 +463,14 @@ export class MuseHost {
   /**
    * Ask a quick question in a side session; the main chat never sees it.
    * Approvals fall back to the main panel when the side run needs one.
+   * Progress lines feed the side card; the log notes each step for diagnosis.
    */
-  public async sideAsk(workspaceRoot: string, question: string): Promise<string> {
+  public async sideAsk(
+    workspaceRoot: string,
+    question: string,
+    onProgress?: (line: string) => void,
+  ): Promise<string> {
+    const started = Date.now();
     const { session, connection } = await this.useConnection(workspaceRoot);
     const client = this.client;
     if (!client) {
@@ -461,21 +478,27 @@ export class MuseHost {
     }
     const made = await connection.command("session/sideChat", { sessionId: session.sessionId });
     const sideId = asString(asRecord(made.session)?.sessionId);
+    this.log(`side: opened ${sideId ?? "(no id)"} in ${Date.now() - started}ms`);
     if (!sideId) {
       throw new Error("Muse didn't take it.");
     }
+    onProgress?.("Chat opened");
     const side = await client.resumeSession({
       sessionId: sideId,
       onApproval: async (request) => ({ choiceId: await this.decideApproval(request) }),
       onApprovalError: () => this.approvalErrorNotice(),
     });
+    this.log(`side: resumed in ${Date.now() - started}ms`);
+    onProgress?.("Asking…");
     const turn = await side.sendUserTurn({ input: [{ type: "text", text: question }] });
+    this.log(`side: turn ${turn.turnId} sent in ${Date.now() - started}ms`);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        collectSideAnswer(turn),
+        collectSideAnswer(turn, (message) => this.log(message), onProgress),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
+            this.log(`side: timed out waiting in ${Date.now() - started}ms`);
             void connection
               .command("turn/interrupt", { sessionId: sideId, turnId: turn.turnId })
               .catch(() => undefined);
@@ -489,6 +512,10 @@ export class MuseHost {
         clearTimeout(timer);
       }
     }
+  }
+
+  private log(message: string): void {
+    this.options.log?.(message);
   }
 
   /** Fork from here (full history); resolves to the new session id. */
@@ -634,7 +661,8 @@ export class MuseHost {
    * run) is ignored.
    */
   private onNotification(notification: Notification): void {
-    const params = notification.params ?? {};
+    // Never throws: a throw here would kill the shared notification pump.
+    const params = asRecord(notification.params) ?? {};
     const sessionId = asString(params.sessionId);
     switch (notification.method) {
       case "session/tokenUsage": {
@@ -787,6 +815,8 @@ export class MuseHost {
       const spawned = await handshake.initialize({
         clientInfo: { name: "meta_betta", version: this.options.version },
       });
+      // Chain before the client claims the single notification slot.
+      chainNotifications(spawned.connection);
       client = new MuseClient(spawned.connection, {
         durability: readSessionDurability(spawned.initializeResult),
         host: spawned,
@@ -1130,6 +1160,27 @@ export class MuseHost {
   }
 }
 
+/**
+ * The SDK connection holds ONE notification handler, and the facade client
+ * claims it for session routing in its constructor — registering ours after
+ * that replaces the router and starves every turn of its events (all turns
+ * hang). Chain registrations instead: every handler fires, newest first, so
+ * ours can never be skipped by a facade throw. Must run before `new
+ * MuseClient` so the constructor's registration is chained too.
+ */
+export function chainNotifications(connection: HostConnection): void {
+  const raw = connection.onNotification.bind(connection);
+  const handlers: ((notification: Notification) => void)[] = [];
+  connection.onNotification = (handler) => {
+    handlers.push(handler);
+    raw((notification) => {
+      for (let index = handlers.length - 1; index >= 0; index -= 1) {
+        handlers[index]?.(notification);
+      }
+    });
+  };
+}
+
 /** Quick / normal / deep in the server's eight-tier vocabulary. */
 const EFFORT_TO_TIER: Record<EffortLevel, string> = { quick: "low", normal: "medium", deep: "high" };
 
@@ -1196,6 +1247,16 @@ function parseTokenUsage(params: Record<string, unknown>): SessionUsageTotals | 
   };
 }
 
+/** One allowance slice, or undefined when the payload is malformed. */
+function parseAllowanceSlice(value: unknown): AllowanceSlice | undefined {
+  const record = asRecord(value);
+  const usedPercent = record ? asNumber(record.usedPercent) : undefined;
+  const resetsAtMs = record ? asNumber(record.resetsAtMs) : undefined;
+  return usedPercent === undefined || resetsAtMs === undefined
+    ? undefined
+    : { usedPercent, resetsAtMs };
+}
+
 /** A goal block, null to clear, undefined when the payload is malformed. */
 function parseGoal(value: unknown): GoalInfo | null | undefined {
   if (value === null) {
@@ -1239,14 +1300,31 @@ function taskDetail(record: Record<string, unknown>): string {
 }
 
 /** The side session's answer: its agent messages joined, in order. */
-async function collectSideAnswer(turn: HostTurn): Promise<string> {
+async function collectSideAnswer(
+  turn: HostTurn,
+  log: (message: string) => void,
+  onProgress?: (line: string) => void,
+): Promise<string> {
   const texts = new Map<string, string>();
+  const kinds = new Set<string>();
+  let answerStarted = false;
   for await (const item of turn.items()) {
-    if (String(item.kind) === "agentMessage" && typeof item.text === "string" && item.text.trim() !== "") {
+    const kind = String(item.kind);
+    if (!kinds.has(kind)) {
+      kinds.add(kind);
+      log(`side: first ${kind}`);
+      if (!answerStarted && (kind === "agentMessage" || kind === "reasoning")) {
+        answerStarted = true;
+        onProgress?.("Reading the answer…");
+      }
+    }
+    if (kind === "agentMessage" && typeof item.text === "string" && item.text.trim() !== "") {
       texts.set(item.itemId, item.text);
     }
   }
   const outcome = await turn.completed;
+  const terminal = outcome.kind === "completed" ? outcome.params.terminal : outcome.kind;
+  log(`side: terminal ${terminal}`);
   if (outcome.kind !== "completed" || outcome.params.terminal !== "completed") {
     throw new Error("The side answer didn't come back.");
   }

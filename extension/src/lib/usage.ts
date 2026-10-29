@@ -40,6 +40,11 @@ export function formatStatusBar(usage: SessionUsageTotals | undefined): string {
   return usage.usd === undefined ? tokens : `${tokens} · ${formatCost(usage.usd)}`;
 }
 
+/** The stored today total for the status bar, until live numbers arrive. */
+export function formatStatusBarToday(totalTokens: number): string {
+  return totalTokens > 0 ? `☕ Muse · ${formatTokens(totalTokens)} today` : "☕ Muse";
+}
+
 /** Each session's latest totals for one day (globalState, "today" card). */
 export interface DayUsage {
   date: string;
@@ -58,11 +63,14 @@ export function recordDayUsage(
   return { date: today, sessions };
 }
 
-/** Today's summed tokens and cost across sessions. */
-export function sumDayUsage(day: DayUsage | undefined): { totalTokens: number; usd: number } {
+/** Today's summed tokens and cost across sessions; a stale day sums to zero. */
+export function sumDayUsage(day: DayUsage | undefined, today: string): { totalTokens: number; usd: number } {
+  if (!day || day.date !== today) {
+    return { totalTokens: 0, usd: 0 };
+  }
   let totalTokens = 0;
   let usd = 0;
-  for (const totals of Object.values(day?.sessions ?? {})) {
+  for (const totals of Object.values(day.sessions)) {
     totalTokens += totals.totalTokens;
     usd += totals.usd ?? 0;
   }

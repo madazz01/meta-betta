@@ -12,6 +12,7 @@ import {
   parseSlashCommand,
   SLASH_COMMANDS,
   unknownCommandText,
+  type AllowanceSlice,
   type CardHandlers,
   type CardSpec,
   type EffortLevel,
@@ -41,6 +42,7 @@ import { shortReason } from "./lib/startup.js";
 import {
   cleanDayUsage,
   formatStatusBar,
+  formatStatusBarToday,
   recordDayUsage,
   sumDayUsage,
   todayKey,
@@ -213,6 +215,11 @@ export class ChatController {
   ) {
     this.lastGoal = cleanGoalInfo(this.storage.get<unknown>(GOAL_KEY));
     this.lastEffort = cleanEffortLevel(this.storage.get<unknown>(EFFORT_KEY));
+    const storedToday = sumDayUsage(
+      cleanDayUsage(this.globalState?.get<unknown>(DAILY_USAGE_KEY)),
+      todayKey(),
+    );
+    this.updateStatusBar(formatStatusBarToday(storedToday.totalTokens));
     this.heartbeat();
     this.tickTimer = setInterval(() => {
       this.heartbeat();
@@ -479,7 +486,7 @@ export class ChatController {
       recap: () => this.slashRecap(),
       goal: (op, text) => this.slashGoal(op, text),
       currentGoal: () => this.lastGoal,
-      sideAsk: (question) => this.slashSideAsk(question),
+      sideAsk: (question, onProgress) => this.slashSideAsk(question, onProgress),
       fork: () => this.slashFork(),
       listTasks: () => this.slashListTasks(),
       stopTask: (taskId) => this.slashStopTask(taskId),
@@ -621,12 +628,15 @@ export class ChatController {
   private async slashReadUsage(): Promise<{
     session?: SessionUsageTotals;
     today: { totalTokens: number; usd: number };
-    resetAtMs?: number;
+    weekly?: AllowanceSlice;
+    window?: AllowanceSlice;
   }> {
     const { host, root } = await this.slashHost();
-    const reset = await host.readSubscription(root).catch(() => ({} as { resetAtMs?: number }));
-    const today = sumDayUsage(cleanDayUsage(this.globalState?.get<unknown>(DAILY_USAGE_KEY)));
-    return { session: this.lastUsage, today, ...reset };
+    const allowance = await host
+      .readSubscription(root)
+      .catch(() => ({} as { weekly?: AllowanceSlice; window?: AllowanceSlice }));
+    const today = sumDayUsage(cleanDayUsage(this.globalState?.get<unknown>(DAILY_USAGE_KEY)), todayKey());
+    return { session: this.lastUsage, today, ...allowance };
   }
 
   /** A usage notification: status bar now, today's sums for later. */
@@ -665,9 +675,9 @@ export class ChatController {
     await host.goalCommand(root, op, text);
   }
 
-  private async slashSideAsk(question: string): Promise<string> {
+  private async slashSideAsk(question: string, onProgress?: (line: string) => void): Promise<string> {
     const { host, root } = await this.slashHost();
-    return host.sideAsk(root, question);
+    return host.sideAsk(root, question, onProgress);
   }
 
   private async slashFork(): Promise<void> {
@@ -1742,6 +1752,7 @@ export class ChatController {
       trustWorkspace,
       emit: (event) => this.onHostEvent(event),
       askApproval: (card) => this.askApproval(card),
+      log: (message) => this.log(message),
       sessionStore: {
         loadId: () => this.storage.get<string>(SESSION_ID_KEY),
         saveId: (id) => {

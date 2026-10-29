@@ -88,11 +88,17 @@ export interface PluginRow {
   enabled: boolean;
 }
 
+/** One account allowance slice (weekly or current window), when reported. */
+export interface AllowanceSlice {
+  usedPercent: number;
+  resetsAtMs: number;
+}
+
 export interface UsageInfo {
   session?: SessionUsageTotals;
   today: { totalTokens: number; usd: number };
-  /** When the provider's limit resets, epoch ms, when reported. */
-  resetAtMs?: number;
+  weekly?: AllowanceSlice;
+  window?: AllowanceSlice;
 }
 
 export interface GoalInfo {
@@ -130,7 +136,7 @@ export interface SlashContext {
   recap(): Promise<{ text: string; title?: string }>;
   goal(op: "set" | "edit" | "pause" | "resume" | "clear", text?: string): Promise<void>;
   currentGoal(): GoalInfo | null;
-  sideAsk(question: string): Promise<string>;
+  sideAsk(question: string, onProgress?: (line: string) => void): Promise<string>;
   /** Fork from here and switch to the new chat. */
   fork(): Promise<void>;
   listTasks(): Promise<TaskRow[]>;
@@ -441,8 +447,18 @@ function usageBody(info: UsageInfo): string {
     today += ` · ${formatCost(info.today.usd)} (estimate)`;
   }
   lines.push(today);
-  if (info.resetAtMs !== undefined) {
-    lines.push("", `Limit resets ${formatSaveTime(new Date(info.resetAtMs))}.`);
+  if (info.weekly || info.window) {
+    lines.push("", "**Account**");
+    if (info.weekly) {
+      lines.push(
+        `This week: ${info.weekly.usedPercent}% used · resets ${formatUpdated(info.weekly.resetsAtMs, Date.now())}.`,
+      );
+    }
+    if (info.window) {
+      lines.push(
+        `Right now: ${info.window.usedPercent}% used · resets ${formatSaveTime(new Date(info.window.resetsAtMs))}.`,
+      );
+    }
   }
   lines.push("", `[Full usage on the Meta dashboard](${USAGE_DASHBOARD})`);
   return lines.join("\n");
@@ -586,9 +602,15 @@ export function goalBody(goal: GoalInfo): string {
 async function sideRun(ctx: SlashContext, args: string): Promise<void> {
   const question = args.trim();
   const ask = async (id: string, text: string): Promise<void> => {
-    ctx.updateCard(id, { title: "Side question", body: `**You:** ${text}\n\nWorking…` });
+    const lines: string[] = [];
+    const showWorking = () =>
+      ctx.updateCard(id, { title: "Side question", body: `**You:** ${text}\n\n${[...lines, "Working…"].join("\n")}` });
+    showWorking();
     try {
-      const answer = await ctx.sideAsk(text);
+      const answer = await ctx.sideAsk(text, (line) => {
+        lines.push(line);
+        showWorking();
+      });
       ctx.updateCard(id, { title: "Side question", body: `**You:** ${text}\n\n${answer}` });
     } catch (error) {
       ctx.updateCard(id, {

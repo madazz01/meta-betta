@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { FoldedItem, TurnOutcome } from "@muse-code/sdk";
 import type { Notification } from "@muse-code/sdk/dist/src/msp.js";
 import {
+  chainNotifications,
   MuseHost,
   type HostClient,
   type HostConnection,
@@ -161,6 +162,7 @@ interface ScriptedFake {
   events: MuseHostEvent[];
   requests: { method: string; params: Record<string, unknown> | undefined }[];
   commands: { method: string; params: Record<string, unknown> }[];
+  logs: string[];
   emit(notification: { method: string; params?: Record<string, unknown> }): void;
 }
 
@@ -173,6 +175,7 @@ function fakeCommands(options: {
   const events: MuseHostEvent[] = [];
   const requests: ScriptedFake["requests"] = [];
   const commands: ScriptedFake["commands"] = [];
+  const logs: string[] = [];
   let notify: ((notification: Notification) => void) | undefined;
   const mainSession: HostSession = {
     sessionId: "session-1",
@@ -210,10 +213,14 @@ function fakeCommands(options: {
       },
       askApproval: () => Promise.resolve(undefined),
       createHost: async () => ({ client, connection }),
+      log: (message) => {
+        logs.push(message);
+      },
     }),
     events,
     requests,
     commands,
+    logs,
     emit: (notification) => notify?.({ jsonrpc: "2.0", ...notification }),
   };
 }
@@ -238,6 +245,39 @@ function historySession(sessionId: string, history: FoldedItem[]): HostSession {
     fold: { items: { list: () => history } },
   };
 }
+
+describe("chainNotifications", () => {
+  it("fires every handler, newest first, on the single slot", () => {
+    let slot: ((notification: Notification) => void) | undefined;
+    const connection: HostConnection = {
+      command: async () => ({}),
+      request: async () => ({}),
+      onNotification: (handler) => {
+        slot = handler;
+      },
+    };
+    chainNotifications(connection);
+    const seen: string[] = [];
+    connection.onNotification(() => {
+      seen.push("facade");
+    });
+    connection.onNotification(() => {
+      seen.push("ours");
+    });
+    slot?.({ jsonrpc: "2.0", method: "session/tokenUsage", params: {} });
+    assert.deepEqual(seen, ["ours", "facade"]);
+  });
+});
+
+describe("prepare status", () => {
+  it("says Ready once the host is up", async () => {
+    const fake = fakeCommands({});
+    await fake.host.prepare(process.cwd());
+    const statuses = fake.events.filter((event) => event.type === "status");
+    assert.equal(statuses.at(-1)?.text, "Ready");
+    await fake.host.dispose();
+  });
+});
 
 describe("slash notifications", () => {
   it("routes usage, goal, model and effort to events", async () => {
@@ -361,7 +401,12 @@ describe("slash commands", () => {
         },
         "skill/list": { skills: [{ selector: "fix-bug", displayName: "Fix bug", description: "Fixes." }] },
         "plugin/list": { plugins: [{ id: "acme", version: "1.2", enabled: true }] },
-        "usage/read": { usage: { window: { resetsAtMs: 123 } } },
+        "usage/read": {
+          usage: {
+            weekly: { usedPercent: 45, resetsAtMs: 456 },
+            window: { usedPercent: 12, resetsAtMs: 123 },
+          },
+        },
       },
     });
     assert.deepEqual(await fake.host.listSessions(process.cwd()), [
@@ -379,7 +424,10 @@ describe("slash commands", () => {
       { selector: "fix-bug", name: "Fix bug", description: "Fixes." },
     ]);
     assert.deepEqual(await fake.host.listPlugins(process.cwd()), [{ id: "acme", version: "1.2", enabled: true }]);
-    assert.deepEqual(await fake.host.readSubscription(process.cwd()), { resetAtMs: 123 });
+    assert.deepEqual(await fake.host.readSubscription(process.cwd()), {
+      weekly: { usedPercent: 45, resetsAtMs: 456 },
+      window: { usedPercent: 12, resetsAtMs: 123 },
+    });
     assert.deepEqual(
       fake.requests.map((entry) => entry.method),
       ["session/list", "model/list", "task/list", "skill/list", "plugin/list", "usage/read"],
@@ -449,6 +497,35 @@ describe("slash commands", () => {
         (event) => event.type !== "assistant" && event.type !== "user",
       ),
     );
+    await fake.host.dispose();
+  });
+
+  it("logs each side step and reports progress", async () => {
+    const fake = fakeCommands({
+      commands: { "session/sideChat": { session: { sessionId: "side-1" } } },
+      sessions: {
+        "side-1": {
+          sessionId: "side-1",
+          sendUserTurn: async () =>
+            cannedTurn([
+              { kind: "reasoning", itemId: "r1", revision: 1, status: "completed", text: "hmm" },
+              { kind: "agentMessage", itemId: "a1", revision: 1, status: "completed", text: "Done." },
+            ]),
+          onApproval: () => undefined,
+          onApprovalError: () => undefined,
+          fold: { items: { list: () => [] } },
+        },
+      },
+    });
+    const progress: string[] = [];
+    assert.equal(await fake.host.sideAsk(process.cwd(), "Why?", (line) => progress.push(line)), "Done.");
+    assert.deepEqual(progress, ["Chat opened", "Asking…", "Reading the answer…"]);
+    assert.ok(fake.logs.some((line) => line.startsWith("side: opened side-1")));
+    assert.ok(fake.logs.some((line) => line.startsWith("side: resumed")));
+    assert.ok(fake.logs.some((line) => line.startsWith("side: turn turn-1 sent")));
+    assert.ok(fake.logs.includes("side: first reasoning"));
+    assert.ok(fake.logs.includes("side: first agentMessage"));
+    assert.ok(fake.logs.includes("side: terminal completed"));
     await fake.host.dispose();
   });
 
