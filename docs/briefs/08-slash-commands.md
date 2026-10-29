@@ -38,6 +38,8 @@ Full feature inventory with "when it helps": [`docs/muse-features.md`](../muse-f
 5. All card text plain and short.
 6. **Pinned goal card:** while a goal is set, a slim card stays pinned at the top of the chat: `🎯 <objective>`, a progress bar from `percentComplete` (clamp the display to 0–100; the raw value can exceed 100), `Now: <currentWork> · Next: <nextWork>` when present, the status, and [Pause]/[Resume] [Clear] buttons. It updates live on `session/goalChanged` and disappears on `null`. Save my day (brief 05) also writes the goal and its percent into the `project` section so tomorrow's catch-up knows where the goal is at. Muse's goal commands go through the connection we hold (brief 02's real Stop).
 
+7. **Quick-action buttons (Bryan's top five, 29 Oct):** the most useful commands get buttons, not just slash commands. Undo is already in the header. Add a slim row of chips just above the message box: `🎯 Goal` · `💬 Side question` · `🔀 Fork` · `📊 Usage`, each with a plain-words tooltip (e.g. "Ask something off-topic without muddling the main job"). Goal → asks for the goal, then pins the goal card (Build 6). Side question → opens a small side box; the answer appears there, main chat untouched (`session/sideChat`). Fork → "Try another way from here" (`session/fork`), also offered on each message. Usage → the /usage card. Keep the row compact; it must not crowd the input on a narrow sidebar (collapse to icons only when narrow).
+
 ## Done when
 - Build + tests pass.
 - `/` opens the menu; `/usage` shows real numbers after a turn; `/model` switches and the next turn uses the new model; `/resume` lists earlier sessions and switching works; `/compact` and `/recap` respond sensibly; unknown commands give the friendly message.
