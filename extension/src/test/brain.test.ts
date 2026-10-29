@@ -26,6 +26,7 @@ import {
   greetingName,
   isBackupTargetSafe,
   isLabelTaken,
+  isStarterMe,
   LIVE_LABEL_TTL_MS,
   needsCatchUp,
   splitSaveReply,
@@ -35,10 +36,20 @@ import {
   topicFromFirstMessage,
   tricksPreview,
   UnsafeBackupError,
+  welcomeName,
+  withNameLine,
+  withStartHere,
   type BackupOps,
   type BrainFs,
 } from "../brain/brain.js";
-import { isSavePrompt, QUICK_SAVE_PROMPT, SAVE_MY_DAY_PROMPT } from "../brain/prompts.js";
+import {
+  isSavePrompt,
+  QUICK_SAVE_PROMPT,
+  SAVE_MY_DAY_PROMPT,
+  WELCOME_MEMORY_DETAIL,
+  WELCOME_MEMORY_TEXT,
+  WELCOME_PROMPT,
+} from "../brain/prompts.js";
 
 /** In-memory file system. Yields between steps so races interleave. */
 function fakeFs(): BrainFs & { files: Map<string, string> } {
@@ -378,6 +389,53 @@ describe("greetingName", () => {
     assert.equal(greetingName(undefined), undefined);
     assert.equal(greetingName(""), undefined);
   });
+
+  it("reads a Name: line first", () => {
+    assert.equal(greetingName("# About me\n\nName: Bryan\n"), "Bryan");
+    assert.equal(greetingName("Name: ana"), "Ana");
+    assert.equal(greetingName("Name: \nI'm Bryan."), "Bryan");
+  });
+});
+
+describe("welcome filing", () => {
+  it("spots a starter me.md", () => {
+    assert.equal(
+      isStarterMe("# About me\n\nWho you are and how you like answers (short or full, plain words). The welcome chat fills this in — or just edit it.\n"),
+      true,
+    );
+    assert.equal(isStarterMe("# About me\n\nName: Bryan\n"), false);
+    assert.equal(isStarterMe(undefined), true);
+  });
+
+  it("appends one Name: line, never two", () => {
+    assert.equal(withNameLine("# About me\n", "Bryan"), "# About me\n\nName: Bryan\n");
+    assert.equal(withNameLine("# About me\n\nName: Bryan\n", "Ana"), "# About me\n\nName: Bryan\n");
+  });
+
+  it("writes the START HERE section and keeps the rest", () => {
+    assert.equal(
+      withStartHere("## START HERE\n\nOld.\n\n## Updates\n\n- x\n", "A todo app."),
+      "## START HERE\n\nA todo app.\n\n## Updates\n\n- x\n",
+    );
+    assert.equal(withStartHere("## Updates\n\n- x\n", "A todo app."), "## START HERE\n\nA todo app.\n\n## Updates\n\n- x\n");
+    assert.equal(withStartHere("## START HERE\n\nOld.", "New."), "## START HERE\n\nNew.\n");
+    assert.equal(withStartHere("## START HERE\n\nOld.\n", "  "), "## START HERE\n\nOld.\n");
+  });
+
+  it("takes a name from a welcome answer", () => {
+    assert.equal(welcomeName("Bryan"), "Bryan");
+    assert.equal(welcomeName("bob smith"), "Bob smith");
+    assert.equal(welcomeName("I'm Bryan."), "Bryan");
+    assert.equal(welcomeName("call me Al"), "Al");
+  });
+
+  it("leaves refusals and rambles alone", () => {
+    assert.equal(welcomeName("no thanks"), undefined);
+    assert.equal(welcomeName("I'd rather not say"), undefined);
+    assert.equal(welcomeName("don't call me anything"), undefined);
+    assert.equal(welcomeName("well that depends what you mean by name"), undefined);
+    assert.equal(welcomeName(""), undefined);
+  });
 });
 
 describe("catchUpGreeting", () => {
@@ -487,6 +545,26 @@ describe("save prompts", () => {
     assert.equal(isSavePrompt(QUICK_SAVE_PROMPT), true);
     assert.equal(isSavePrompt("Save my day please"), false);
     assert.equal(isSavePrompt(""), false);
+  });
+});
+
+describe("welcome words", () => {
+  it("asks the name, then the project, one per reply", () => {
+    assert.ok(WELCOME_PROMPT.includes(`"G'day! What should I call you?"`));
+    assert.ok(WELCOME_PROMPT.includes(`"What are we working on in this folder?"`));
+    assert.ok(WELCOME_PROMPT.includes("Don't edit any files."));
+  });
+
+  it("memory message links the Brain panel and Save my day", () => {
+    assert.ok(WELCOME_MEMORY_TEXT.includes("`brain/`"));
+    assert.ok(WELCOME_MEMORY_TEXT.includes("Save my day"));
+    assert.ok(WELCOME_MEMORY_TEXT.includes("Here's where we're up to"));
+  });
+
+  it("detail says where the brain lives and what stays out of it", () => {
+    assert.ok(WELCOME_MEMORY_DETAIL.includes("stored in this project, on your machine"));
+    assert.ok(WELCOME_MEMORY_DETAIL.includes("backup folder in Settings"));
+    assert.ok(WELCOME_MEMORY_DETAIL.includes("keep passwords and keys out of it"));
   });
 });
 

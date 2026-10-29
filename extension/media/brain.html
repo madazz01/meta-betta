@@ -83,6 +83,14 @@
           showStatus(message.text);
         } else if (message.type === "brainFlash" && Array.isArray(message.files)) {
           flashCards(message.files);
+        } else if (message.type === "brainOutline") {
+          var main = document.getElementById("brain");
+          main.classList.remove("outline-flash");
+          void main.offsetWidth;
+          main.classList.add("outline-flash");
+          setTimeout(function () {
+            main.classList.remove("outline-flash");
+          }, 5000);
         }
       });
     })();

@@ -159,6 +159,75 @@ export async function ensureGitignoreEntry(
   return true;
 }
 
+/** True when me.md is missing or still the starter template (welcome needed). */
+export function isStarterMe(content: string | undefined): boolean {
+  if (!content) {
+    return true;
+  }
+  const template = BRAIN_FILES.find((file) => file.file === "me.md")?.template ?? "";
+  return content.trim() === template.trim();
+}
+
+/**
+ * Append a `Name: <name>` line, unless one is already there (first wins).
+ */
+export function withNameLine(content: string, name: string): string {
+  if (
+    content
+      .split("\n")
+      .map((line) => line.trim())
+      .some((line) => /^name:/i.test(line))
+  ) {
+    return content;
+  }
+  return `${content.replace(/\n*$/, "")}\n\nName: ${name.trim()}\n`;
+}
+
+/**
+ * Set the START HERE section body, keeping the rest of the file. Adds the
+ * section on top when the file has none.
+ */
+export function withStartHere(content: string, body: string): string {
+  const trimmed = body.trim();
+  if (trimmed === "") {
+    return content;
+  }
+  const lines = content.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "## START HERE");
+  if (start === -1) {
+    return `## START HERE\n\n${trimmed}\n\n${content.replace(/^\n+/, "")}`;
+  }
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => line.trim().startsWith("## "));
+  const after = end === -1 ? [] : rest.slice(end);
+  return [...lines.slice(0, start), "## START HERE", "", trimmed, "", ...after].join("\n");
+}
+
+/**
+ * A name from a welcome answer: "I'm Bryan" patterns first, else a short
+ * bare answer ("Bryan", "Bob Smith"). Refusals and rambles give undefined.
+ */
+export function welcomeName(text: string): string | undefined {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (
+    /^(?:no\b|nope|nah\b|skip\b|pass\b|none\b|rather\s+not|prefer\s+not|do\s+not\s+call\s+me|don't\s+call\s+me)/i.test(
+      clean,
+    )
+  ) {
+    return undefined;
+  }
+  const known = greetingName(clean);
+  if (known) {
+    return known;
+  }
+  const bare = clean.replace(/[.?…!]+$/, "").trim();
+  const words = bare.split(" ").filter((word) => word !== "");
+  if (words.length >= 1 && words.length <= 3 && bare.length <= 40 && /[A-Za-z]/.test(bare)) {
+    return bare.charAt(0).toUpperCase() + bare.slice(1);
+  }
+  return undefined;
+}
+
 /** `### 2026-10-28 09:41 · Session 7f3a · login page` (local time). */
 export function entryHeading(now: Date, sessionLabel: string): string {
   const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -484,10 +553,20 @@ export function tricksPreview(content: string): string {
   return kept.slice(-3).reverse().join("\n\n");
 }
 
-/** A first name from me.md ("I'm Bryan", "my name is Bryan"), if any. */
+/** A first name from me.md: a `Name:` line first, then "I'm…/call me…" fallbacks. */
 export function greetingName(meMd: string | undefined): string | undefined {
   if (!meMd) {
     return undefined;
+  }
+  const named = meMd
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => /^name:/i.test(line));
+  if (named) {
+    const name = named.replace(/^name:/i, "").trim();
+    if (name !== "") {
+      return name.charAt(0).toUpperCase() + name.slice(1);
+    }
   }
   const pattern = /\b(?:my name is|i'm|i’m|i am|call me)\s+([A-Za-z][A-Za-z'-]*)/gi;
   let match: RegExpExecArray | null;

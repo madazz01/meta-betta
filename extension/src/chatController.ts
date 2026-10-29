@@ -28,6 +28,7 @@ import {
   formatSaveTime,
   formatSessionLabel,
   isLabelTaken,
+  isStarterMe,
   LIVE_LABEL_TTL_MS,
   needsCatchUp,
   nodeBrainFs,
@@ -35,10 +36,19 @@ import {
   todayLogFile,
   topicFromFirstMessage,
   UnsafeBackupError,
+  welcomeName,
+  withNameLine,
+  withStartHere,
   type SaveSection,
   type SaveSections,
 } from "./brain/brain.js";
-import { QUICK_SAVE_PROMPT, SAVE_MY_DAY_PROMPT } from "./brain/prompts.js";
+import {
+  QUICK_SAVE_PROMPT,
+  SAVE_MY_DAY_PROMPT,
+  WELCOME_MEMORY_DETAIL,
+  WELCOME_MEMORY_TEXT,
+  WELCOME_PROMPT,
+} from "./brain/prompts.js";
 import { findGitBin, formatUndoTime, NoGitError, ShadowSnapshots } from "./safety/snapshots.js";
 import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
@@ -64,7 +74,8 @@ type TranscriptEvent =
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
   | { type: "saved"; text: string; backup?: string; sections: SavedSection[] }
   | { type: "undo"; id: string; label: string }
-  | { type: "undoDone"; id: string; state: "undone" | "ready" | "gone" };
+  | { type: "undoDone"; id: string; state: "undone" | "ready" | "gone" }
+  | { type: "memory"; text: string; detail: string };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
@@ -73,6 +84,7 @@ const TRANSCRIPT_KEY = "metaBetta.transcript";
 const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
 const LIVE_LABELS_KEY = "metaBetta.liveLabels";
 const UNDOS_KEY = "metaBetta.undos";
+const WELCOMED_KEY = "metaBetta.welcomed";
 /** Heartbeat + quick-save check, every 10 seconds. */
 const TICK_MS = 10_000;
 /** A quick save also fires after this many turns, whatever the clock says. */
@@ -128,6 +140,8 @@ export class ChatController {
   private replaying = false;
   private replayer: UndoReplayer | undefined;
   private headerUndoSeq = 0;
+  private welcomeStep: "hello" | "project" | "memory" | undefined;
+  private welcomeHeard = false;
   private gitNoticeShown = false;
   private gitBinCache: string | undefined;
   private shadowCache: { folder: string; bin: string; shadow: ShadowSnapshots } | undefined;
@@ -143,6 +157,7 @@ export class ChatController {
     private readonly onBrainChanged: (files: string[]) => void = () => undefined,
     private readonly storageDir: string | undefined = undefined,
     private readonly logFn: (message: string) => void = () => undefined,
+    private readonly onWelcomeOutline: () => void = () => undefined,
   ) {
     this.heartbeat();
     this.tickTimer = setInterval(() => {
@@ -161,6 +176,7 @@ export class ChatController {
     sink.post({ type: "turn", state: this.running ? "started" : "done" });
     sink.post({ type: "status", text: this.lastStatus });
     sink.post({ type: "sessionLabel", label: this.sessionLabel() });
+    sink.post({ type: "welcomeSkip", show: this.welcomeStep !== undefined });
     void this.updateHeaderUndo();
     if (!vscode.workspace.workspaceFolders?.[0]) {
       sink.post({ type: "noFolder" });
@@ -212,6 +228,8 @@ export class ChatController {
     }
     this.memoryAnnounced = false;
     await this.ensureMemory(folder);
+    // Trust granted mid-session is first setup too.
+    void this.maybeWelcome(folder);
   }
 
   public unbind(sink: ChatSink): void {
@@ -260,13 +278,100 @@ export class ChatController {
       });
       return;
     }
+    if (this.welcomeStep && /^\s*skip(\s+this|\s+for\s+now)?\s*[.?]?\s*$/i.test(text)) {
+      this.skipWelcome();
+      return;
+    }
     // Recorded only once the turn will actually run: a failed send never
     // reaches the server, and a ghost user message would skew the undo
     // anchors on resume.
     this.recordAndBroadcast({ type: "user", text });
     this.storeSet(LAST_MESSAGE_KEY, Date.now());
+    if (this.welcomeStep === "hello" && !this.welcomeHeard) {
+      // The hello never arrived (failed or stopped): cancel rather than
+      // filing guesses. A reload tries the welcome again.
+      this.welcomeStep = undefined;
+      this.broadcast({ type: "welcomeSkip", show: false });
+    } else if (this.welcomeStep === "hello") {
+      await this.fileWelcomeName(folder, text);
+      this.welcomeStep = "project";
+    } else if (this.welcomeStep === "project") {
+      await this.fileWelcomeProject(folder, text);
+      this.welcomeStep = "memory";
+    }
     this.pendingBefore = await this.takeBeforeSnapshot(folder);
     await host.send(await this.withBackground(folder, text), folder.uri.fsPath);
+  }
+
+  /**
+   * The welcome, first run in a workspace: Muse asks the name, then the
+   * project. The extension files both answers itself; Muse just chats.
+   */
+  private async maybeWelcome(folder: vscode.WorkspaceFolder): Promise<void> {
+    // A finished welcome never repeats (even nameless); a skip tries again.
+    if (!this.memoryOn || this.welcomeStep || this.storage.get<boolean>(WELCOMED_KEY)) {
+      return;
+    }
+    let me: string | undefined;
+    try {
+      me = await nodeBrainFs.readFile(path.join(folder.uri.fsPath, "brain", "me.md"));
+    } catch {
+      me = undefined;
+    }
+    if (!isStarterMe(me)) {
+      return;
+    }
+    this.welcomeStep = "hello";
+    this.welcomeHeard = false;
+    this.broadcast({ type: "welcomeSkip", show: true });
+    const host = await this.ensureHost(folder);
+    await host.send(WELCOME_PROMPT, folder.uri.fsPath);
+  }
+
+  public skipWelcome(): void {
+    if (!this.welcomeStep) {
+      return;
+    }
+    this.welcomeStep = undefined;
+    this.broadcast({ type: "welcomeSkip", show: false });
+    this.recordAndBroadcast({ type: "notice", kind: "info", text: "Skipped for now — what's first?" });
+  }
+
+  private async fileWelcomeName(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
+    const name = welcomeName(text);
+    if (!name) {
+      return;
+    }
+    try {
+      const target = path.join(folder.uri.fsPath, "brain", "me.md");
+      const content = await nodeBrainFs.readFile(target).catch(() => "");
+      await nodeBrainFs.writeFile(target, withNameLine(content, name));
+    } catch {
+      // The welcome carries on without it; me.md stays editable.
+    }
+  }
+
+  private async fileWelcomeProject(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
+    if (text.trim() === "") {
+      return;
+    }
+    try {
+      const target = path.join(folder.uri.fsPath, "brain", "project.md");
+      const content = await nodeBrainFs.readFile(target).catch(() => "");
+      await nodeBrainFs.writeFile(target, withStartHere(content, text));
+    } catch {
+      // The welcome carries on without it; project.md stays editable.
+    }
+  }
+
+  /** The memory message, the tour outlines, and "What's first?". */
+  private finishWelcome(): void {
+    this.welcomeStep = undefined;
+    this.storeSet(WELCOMED_KEY, true);
+    this.broadcast({ type: "welcomeSkip", show: false });
+    this.recordAndBroadcast({ type: "memory", text: WELCOME_MEMORY_TEXT, detail: WELCOME_MEMORY_DETAIL });
+    this.recordAndBroadcast({ type: "assistant", id: "welcome-next", text: "What's first?" });
+    this.onWelcomeOutline();
   }
 
   /**
@@ -274,7 +379,7 @@ export class ChatController {
    * attach it as background, showing a friendly placeholder meanwhile.
    */
   private async withBackground(folder: vscode.WorkspaceFolder, text: string): Promise<string> {
-    if (!this.memoryOn || this.liveReplySeen) {
+    if (!this.memoryOn || this.liveReplySeen || this.welcomeStep) {
       return text;
     }
     if (this.forceCatchUp) {
@@ -853,6 +958,9 @@ export class ChatController {
     this.pendingSave = undefined;
     // The interrupted turn ends silently, so no after-snapshot pairs with this.
     this.pendingBefore = undefined;
+    // A new chat drops the script (a reload tries the welcome again).
+    this.welcomeStep = undefined;
+    this.broadcast({ type: "welcomeSkip", show: false });
     const host = await this.ensureHost(folder);
     try {
       await host.newSession(folder.uri.fsPath);
@@ -950,65 +1058,70 @@ export class ChatController {
         this.anchorHigh = Math.max(this.anchorHigh, undo.anchor);
       }
       const folder = vscode.workspace.workspaceFolders?.[0];
-      const savedId = this.storage.get<string>(SESSION_ID_KEY);
-      if (!folder || !savedId?.trim()) {
-        this.log(`Resume: none (${!folder ? "no folder open" : "no saved session"})`);
+      if (!folder) {
+        this.log("Resume: none (no folder open)");
         void this.updateHeaderUndo();
         return;
       }
       const host = await this.ensureHost(folder);
-      this.replaying = true;
-      const resumeId = this.storage.get<string>(SESSION_ID_KEY)?.trim() || undefined;
-      this.replayer = new UndoReplayer([...this.undos.values()], resumeId);
-      try {
-        let shown = 0;
+      const savedId = this.storage.get<string>(SESSION_ID_KEY);
+      if (!savedId?.trim()) {
+        this.log("Resume: none (no saved session)");
+      } else {
+        this.replaying = true;
+        const resumeId = savedId.trim() || undefined;
+        this.replayer = new UndoReplayer([...this.undos.values()], resumeId);
         try {
-          shown = await host.prepare(folder.uri.fsPath);
-        } catch {
-          // Leave the panel usable; send() surfaces startup problems properly.
-          shown = 0;
+          let shown = 0;
+          try {
+            shown = await host.prepare(folder.uri.fsPath);
+          } catch {
+            // Leave the panel usable; send() surfaces startup problems properly.
+            shown = 0;
+          }
+          if (shown === 0) {
+            const stored = cleanTranscript(this.storage.get<unknown>(TRANSCRIPT_KEY));
+            this.log(`Resume: stored transcript (${stored.length} entries)`);
+            const replayed = new Set<string>();
+            stored.forEach((entry, index) => {
+              if (entry.role === "undo" && entry.id) {
+                this.emitReplayedUndo(entry.id);
+                replayed.add(entry.id);
+                this.log(`${entry.id}: replayed from stored transcript`);
+              } else {
+                this.recordAndBroadcast(
+                  entry.role === "user"
+                    ? { type: "user", text: entry.text }
+                    : { type: "assistant", id: `stored-${index}`, text: entry.text },
+                );
+              }
+            });
+            for (const undo of loaded) {
+              if (!replayed.has(undo.id)) {
+                this.log(`${undo.id}: not in stored transcript`);
+              }
+            }
+          } else {
+            for (const id of this.replayer.finish()) {
+              this.emitReplayedUndo(id);
+            }
+            const users = this.replayer.userCount();
+            this.log(`Resume: server history (${users} user messages)`);
+            const fired = new Set(this.replayer.firedIds());
+            for (const undo of loaded) {
+              if (fired.has(undo.id)) {
+                this.log(`${undo.id}: anchor ${undo.anchor} matched`);
+              } else {
+                this.log(`${undo.id}: anchor ${undo.anchor} had no reply (${users} users replayed)`);
+              }
+            }
+          }
+        } finally {
+          this.replaying = false;
+          this.replayer = undefined;
         }
-        if (shown === 0) {
-          const stored = cleanTranscript(this.storage.get<unknown>(TRANSCRIPT_KEY));
-          this.log(`Resume: stored transcript (${stored.length} entries)`);
-          const replayed = new Set<string>();
-          stored.forEach((entry, index) => {
-            if (entry.role === "undo" && entry.id) {
-              this.emitReplayedUndo(entry.id);
-              replayed.add(entry.id);
-              this.log(`${entry.id}: replayed from stored transcript`);
-            } else {
-              this.recordAndBroadcast(
-                entry.role === "user"
-                  ? { type: "user", text: entry.text }
-                  : { type: "assistant", id: `stored-${index}`, text: entry.text },
-              );
-            }
-          });
-          for (const undo of loaded) {
-            if (!replayed.has(undo.id)) {
-              this.log(`${undo.id}: not in stored transcript`);
-            }
-          }
-        } else {
-          for (const id of this.replayer.finish()) {
-            this.emitReplayedUndo(id);
-          }
-          const users = this.replayer.userCount();
-          this.log(`Resume: server history (${users} user messages)`);
-          const fired = new Set(this.replayer.firedIds());
-          for (const undo of loaded) {
-            if (fired.has(undo.id)) {
-              this.log(`${undo.id}: anchor ${undo.anchor} matched`);
-            } else {
-              this.log(`${undo.id}: anchor ${undo.anchor} had no reply (${users} users replayed)`);
-            }
-          }
-        }
-      } finally {
-        this.replaying = false;
-        this.replayer = undefined;
       }
+      await this.maybeWelcome(folder);
       void this.updateHeaderUndo();
     } finally {
       this.prepared = true;
@@ -1165,6 +1278,9 @@ export class ChatController {
       this.broadcast(event);
       if (!this.running) {
         this.persistTranscript();
+        if (this.welcomeStep === "memory") {
+          this.finishWelcome();
+        }
         const before = this.pendingBefore;
         this.pendingBefore = undefined;
         void this.finishTurnSnapshot(before);
@@ -1196,6 +1312,9 @@ export class ChatController {
     }
     if (event.type === "assistant" && this.running) {
       this.liveReplySeen = true;
+    }
+    if (this.welcomeStep === "hello" && event.type === "assistant") {
+      this.welcomeHeard = true;
     }
     this.recordAndBroadcast(event);
     if (this.replaying && this.replayer && event.type === "assistant") {
@@ -1309,6 +1428,10 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
   }
   if (message.type === "undoLast") {
     void controller.undoLast();
+    return;
+  }
+  if (message.type === "skipWelcome") {
+    controller.skipWelcome();
     return;
   }
   if (message.type === "newChat") {

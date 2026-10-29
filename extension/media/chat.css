@@ -345,3 +345,41 @@ body {
 .undo {
   margin-top: -4px;
 }
+
+.memory {
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background-color: var(--vscode-input-background);
+}
+
+.memory-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memory-text p {
+  margin: 0;
+}
+
+.memory-more {
+  margin-top: 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.memory-more summary {
+  cursor: pointer;
+}
+
+.memory-detail {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 4px;
+}
+
+.outline-flash {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}

@@ -27,6 +27,10 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     context.storageUri?.fsPath,
     (message) => output.appendLine(`[${new Date().toLocaleTimeString("en-GB")}] ${message}`),
+    () => {
+      brainProvider?.outline();
+      brainSideProvider?.outline();
+    },
   );
   viewProvider = new ChatViewProvider(context.extensionUri, controller, () => {
     if (controller) {

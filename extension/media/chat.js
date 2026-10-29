@@ -12,6 +12,7 @@
   const newChatButton = document.getElementById("new-chat");
   const saveDayButton = document.getElementById("save-day");
   const undoLastButton = document.getElementById("undo-last");
+  const skipWelcomeButton = document.getElementById("skip-welcome");
   const sessionLabelButton = document.getElementById("session-label");
   const noFolderEl = document.getElementById("no-folder");
   const openFolderButton = document.getElementById("open-folder");
@@ -250,6 +251,41 @@
     }
   }
 
+  function outlineForAWhile(el) {
+    if (!el) {
+      return;
+    }
+    el.classList.remove("outline-flash");
+    void el.offsetWidth;
+    el.classList.add("outline-flash");
+    setTimeout(() => {
+      el.classList.remove("outline-flash");
+    }, 5000);
+  }
+
+  function addMemory(message) {
+    hideEmptyState();
+    const card = document.createElement("div");
+    card.className = "memory";
+    const body = document.createElement("div");
+    body.className = "memory-text";
+    body.innerHTML = renderReply(message.text);
+    card.appendChild(body);
+    const details = document.createElement("details");
+    details.className = "memory-more";
+    const summary = document.createElement("summary");
+    summary.textContent = "How does this work?";
+    const more = document.createElement("div");
+    more.className = "memory-detail";
+    more.innerHTML = renderReply(message.detail);
+    details.appendChild(summary);
+    details.appendChild(more);
+    card.appendChild(details);
+    messagesEl.appendChild(card);
+    scrollToBottom();
+    outlineForAWhile(saveDayButton);
+  }
+
   function addNotice(message) {
     hideEmptyState();
     const notice = document.createElement("div");
@@ -308,6 +344,10 @@
 
   undoLastButton.addEventListener("click", () => {
     vscode.postMessage({ type: "undoLast" });
+  });
+
+  skipWelcomeButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "skipWelcome" });
   });
 
   sessionLabelButton.addEventListener("click", () => {
@@ -416,6 +456,16 @@
           if (typeof message.tip === "string") {
             undoLastButton.title = message.tip;
           }
+        }
+        break;
+      case "memory":
+        if (typeof message.text === "string" && typeof message.detail === "string") {
+          addMemory(message);
+        }
+        break;
+      case "welcomeSkip":
+        if (typeof message.show === "boolean") {
+          skipWelcomeButton.hidden = !message.show;
         }
         break;
       case "turn":

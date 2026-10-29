@@ -58,6 +58,13 @@ export class BrainViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Briefly outline the whole panel (welcome tour). */
+  public outline(): void {
+    if (this.view) {
+      void this.view.webview.postMessage({ type: "brainOutline" });
+    }
+  }
+
   public async refresh(): Promise<void> {
     const view = this.view;
     if (!view) {
