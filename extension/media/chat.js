@@ -464,25 +464,51 @@
     title.className = "approval-title";
     title.textContent = message.title;
     card.appendChild(title);
+    const hasStage = typeof message.stage === "string" && message.stage;
+    if (hasStage) {
+      const stage = document.createElement("p");
+      stage.className = "approval-stage";
+      stage.textContent = message.stage;
+      card.appendChild(stage);
+    }
     if (typeof message.detail === "string" && message.detail) {
       const detail = document.createElement("pre");
+      if (hasStage) {
+        detail.className = "approval-full";
+      }
       detail.textContent = message.detail;
       card.appendChild(detail);
     }
     const choices = document.createElement("div");
     choices.className = "approval-choices";
+    let why = null;
     for (const choice of message.choices) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "btn";
       button.textContent = choice.label;
+      if (typeof choice.hint === "string" && choice.hint) {
+        button.title = choice.hint;
+      }
       button.addEventListener("click", () => {
-        vscode.postMessage({ type: "approve", id: message.id, choiceId: choice.id });
+        const answer = { type: "approve", id: message.id, choiceId: choice.id };
+        if (why && why.value.trim() !== "") {
+          answer.feedback = why.value;
+        }
+        vscode.postMessage(answer);
         disableApproval(message.id, button);
       });
       choices.appendChild(button);
     }
     card.appendChild(choices);
+    if (message.choices.some((choice) => choice && choice.acceptsFeedback === true)) {
+      why = document.createElement("input");
+      why.type = "text";
+      why.className = "approval-why";
+      why.placeholder = "Tell Muse why (optional)";
+      why.setAttribute("aria-label", "Tell Muse why (optional)");
+      card.appendChild(why);
+    }
     messagesEl.appendChild(card);
     approvalEls.set(message.id, card);
     scrollToBottom();
@@ -498,6 +524,9 @@
       if (button === chosen) {
         button.classList.add("chosen");
       }
+    }
+    for (const field of card.querySelectorAll("input")) {
+      field.disabled = true;
     }
   }
 

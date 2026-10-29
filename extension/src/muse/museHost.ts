@@ -30,7 +30,7 @@ import type {
   SkillRow,
   TaskRow,
 } from "../commands/slash.js";
-import { approvalCard, safestChoiceId } from "../lib/approvals.js";
+import { approvalCard, choiceHint, safestChoiceId } from "../lib/approvals.js";
 import { historyEvent, isSandboxBugFailure, reasoningText, toolRowText } from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
 import { classifySpawnError, parseSandboxReady, shortReason } from "../lib/startup.js";
@@ -39,14 +39,28 @@ import type { SessionUsageTotals } from "../lib/usage.js";
 export interface ApprovalChoiceCard {
   id: string;
   label: string;
+  /** True when this choice takes "tell Muse why" text with the decision. */
+  acceptsFeedback?: boolean;
+  /** Hover hint; only the always-allow choice carries one. */
+  hint?: string;
 }
 
 export interface ApprovalCardEvent {
   type: "approval";
   id: string;
+  /** The subject kind ("shell", "fileAccess", …) for one-time notices. */
+  kind: string;
   title: string;
   detail?: string;
+  /** "(step 2 of 3) …" for a multi-stage shell command. */
+  stage?: string;
   choices: ApprovalChoiceCard[];
+}
+
+/** The panel's answer to an approval card: the clicked choice plus optional "why". */
+export interface ApprovalAnswer {
+  choiceId: string;
+  feedback?: string;
 }
 
 export type MuseHostEvent =
@@ -71,10 +85,18 @@ export interface MuseHostOptions {
   trustWorkspace: boolean;
   emit: (event: MuseHostEvent) => void;
   /**
-   * Show an approval card and resolve with the clicked choiceId, or undefined
+   * Show an approval card and resolve with the clicked choice, or undefined
    * when the panel can't ask (closed) — the host then takes the safest choice.
    */
-  askApproval: (card: ApprovalCardEvent) => Promise<string | undefined>;
+  askApproval: (card: ApprovalCardEvent) => Promise<ApprovalAnswer | undefined>;
+  /**
+   * Windows sandbox workaround (the metaBetta.windowsSandboxWorkaround
+   * setting): spawn with the sandbox off and make Muse ask before every
+   * command. Off unless enabled.
+   */
+  sandboxWorkaround?: boolean;
+  /** Test seam: pretend platform for the sandbox workaround. */
+  platform?: string;
   /** Test seam: build the client instead of spawning `muse serve`. */
   createHost?: () => Promise<{ client: HostClient; connection: HostConnection }>;
   /** Saved session id storage; without it every start is a fresh session. */
@@ -158,7 +180,9 @@ export class MuseHost {
   private turnGen = 0;
   /** The sandbox-bug plain line shows once per session, then rows stay short. */
   private sandboxBugNoted = false;
-  private approvalWaiters = new Set<(choiceId: string | undefined) => void>();
+  private approvalWaiters = new Set<(answer: ApprovalAnswer | undefined) => void>();
+  /** Session ids with promptUnmatched confirmed (Windows workaround only). */
+  private promptModeFor: string | undefined;
   private recapWaiters = new Map<
     string,
     {
@@ -182,6 +206,13 @@ export class MuseHost {
       return;
     }
     if (!this.live(state)) {
+      return;
+    }
+    if (!(await this.confirmPromptMode(session.sessionId))) {
+      this.finishTurn(state.gen, {
+        kind: "error",
+        text: "I couldn't make Muse ask before running commands, so I've stopped to be safe.",
+      });
       return;
     }
     this.emit({ type: "status", text: "Muse is thinking…" });
@@ -261,6 +292,43 @@ export class MuseHost {
     await connection.command("turn/interrupt", { sessionId: session.sessionId, turnId });
   }
 
+  /** True when this host runs with the Windows sandbox off. */
+  private sandboxOff(): boolean {
+    return serveArgs(
+      this.options.platform ?? process.platform,
+      this.options.trustWorkspace,
+      this.options.sandboxWorkaround ?? false,
+    ).includes("--disable-sandbox");
+  }
+
+  /**
+   * With the Windows sandbox off, Muse must ask before every command. Sends
+   * session/setApprovalMode right after the session opens and checks the
+   * server confirmed promptUnmatched. Never throws: false means the turn
+   * must not run. A no-op unless the workaround is on.
+   */
+  private async confirmPromptMode(sessionId: string): Promise<boolean> {
+    if (!this.sandboxOff() || this.promptModeFor === sessionId) {
+      return true;
+    }
+    try {
+      const result = await this.connection?.command("session/setApprovalMode", {
+        sessionId,
+        mode: "promptUnmatched",
+      });
+      const mode = asString(asRecord(result?.effectiveMode)?.mode);
+      if (mode === "promptUnmatched") {
+        this.promptModeFor = sessionId;
+        return true;
+      }
+      this.log(`approval mode: expected promptUnmatched, got ${mode ?? "(none)"}`);
+      return false;
+    } catch (error) {
+      this.log(`approval mode: setApprovalMode failed: ${shortReason(error)}`);
+      return false;
+    }
+  }
+
   /** Panel-side stop: drop late events and report "Stopped." at once. */
   private localStop(): void {
     this.turnGen += 1;
@@ -296,9 +364,11 @@ export class MuseHost {
     const client = await this.ensureClient();
     const session = await client.startSession({ workspaceRoot });
     this.session = session;
-    session.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
+    session.onApproval((request) => this.decideApproval(request));
     session.onApprovalError(() => this.approvalErrorNotice());
     this.options.sessionStore?.saveId(session.sessionId);
+    // Best effort here; send() refuses the turn unless this confirms.
+    await this.confirmPromptMode(session.sessionId);
   }
 
   /**
@@ -339,14 +409,16 @@ export class MuseHost {
     const client = await this.ensureClient();
     const session = await client.resumeSession({
       sessionId,
-      onApproval: async (request) => ({ choiceId: await this.decideApproval(request) }),
+      onApproval: (request) => this.decideApproval(request),
       onApprovalError: () => this.approvalErrorNotice(),
     });
     this.session = session;
-    session.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
+    session.onApproval((request) => this.decideApproval(request));
     session.onApprovalError(() => this.approvalErrorNotice());
     this.options.sessionStore?.saveId(session.sessionId);
     this.historyLoadedFor = session.sessionId;
+    // Best effort here; send() refuses the turn unless this confirms.
+    await this.confirmPromptMode(session.sessionId);
     return this.loadHistory(session);
   }
 
@@ -485,10 +557,13 @@ export class MuseHost {
     onProgress?.("Chat opened");
     const side = await client.resumeSession({
       sessionId: sideId,
-      onApproval: async (request) => ({ choiceId: await this.decideApproval(request) }),
+      onApproval: (request) => this.decideApproval(request),
       onApprovalError: () => this.approvalErrorNotice(),
     });
     this.log(`side: resumed in ${Date.now() - started}ms`);
+    if (!(await this.confirmPromptMode(sideId))) {
+      throw new Error("I couldn't make Muse ask before running commands, so I've stopped to be safe.");
+    }
     onProgress?.("Asking…");
     const turn = await side.sendUserTurn({ input: [{ type: "text", text: question }] });
     this.log(`side: turn ${turn.turnId} sent in ${Date.now() - started}ms`);
@@ -526,6 +601,9 @@ export class MuseHost {
     if (!id) {
       throw new Error("Muse didn't take it.");
     }
+    // Best effort: the fork isn't loaded here yet, so this may fail; the
+    // resume in switchSession confirms before any turn runs.
+    await this.confirmPromptMode(id);
     return id;
   }
 
@@ -757,7 +835,7 @@ export class MuseHost {
       try {
         session = await client.resumeSession({
           sessionId: savedId,
-          onApproval: async (request) => ({ choiceId: await this.decideApproval(request) }),
+          onApproval: (request) => this.decideApproval(request),
           onApprovalError: () => this.approvalErrorNotice(),
         });
       } catch {
@@ -768,6 +846,8 @@ export class MuseHost {
     if (action === "resume-saved" && session) {
       this.session = session;
       this.options.sessionStore?.saveId(session.sessionId);
+      // Best effort here; send() refuses the turn unless this confirms.
+      await this.confirmPromptMode(session.sessionId);
       return session;
     }
     let fresh: HostSession;
@@ -778,8 +858,10 @@ export class MuseHost {
       throw error;
     }
     this.session = fresh;
-    fresh.onApproval(async (request) => ({ choiceId: await this.decideApproval(request) }));
+    fresh.onApproval((request) => this.decideApproval(request));
     fresh.onApprovalError(() => this.approvalErrorNotice());
+    // Best effort here; send() refuses the turn unless this confirms.
+    await this.confirmPromptMode(fresh.sessionId);
     if (action === "restart-after-failed-resume") {
       this.options.sessionStore?.clear();
       this.emit({
@@ -808,7 +890,11 @@ export class MuseHost {
     // holds the connection (needed to interrupt a running turn).
     // See spike/stop.mjs.
     const { MuseClient, spawnMspConnection, readSessionDurability } = await import("@muse-code/sdk");
-    const args = this.options.trustWorkspace ? ["serve", "--trust-workspace"] : ["serve"];
+    const args = serveArgs(
+      this.options.platform ?? process.platform,
+      this.options.trustWorkspace,
+      this.options.sandboxWorkaround ?? false,
+    );
     const handshake = spawnMspConnection({ command: this.options.museBin, args });
     let client: MuseClient | undefined;
     try {
@@ -816,7 +902,9 @@ export class MuseHost {
         clientInfo: { name: "meta_betta", version: this.options.version },
       });
       // Chain before the client claims the single notification slot.
-      chainNotifications(spawned.connection);
+      chainNotifications(spawned.connection, (error) => {
+        this.log(`notification handler failed: ${shortReason(error)}`);
+      });
       client = new MuseClient(spawned.connection, {
         durability: readSessionDurability(spawned.initializeResult),
         host: spawned,
@@ -896,12 +984,24 @@ export class MuseHost {
     });
   }
 
-  private decideApproval(request: ApprovalRequestParams): Promise<string> {
-    const card = approvalCard(request.subject, request.toolName, request.rawArgs);
-    return new Promise<string>((resolve) => {
-      const finish = (choiceId: string | undefined) => {
+  private decideApproval(request: ApprovalRequestParams): Promise<ApprovalAnswer> {
+    const card = approvalCard(
+      request.subject,
+      request.toolName,
+      request.rawArgs,
+      request.currentRequirementId?.sourceIndex ?? 0,
+    );
+    const shell = request.subject.kind === "shell";
+    return new Promise<ApprovalAnswer>((resolve) => {
+      const finish = (answer: ApprovalAnswer | undefined) => {
         this.approvalWaiters.delete(finish);
-        resolve(choiceId ?? safestChoiceId(request.availableChoices) ?? "");
+        const choiceId = answer?.choiceId ?? safestChoiceId(request.availableChoices) ?? "";
+        // Feedback only reaches a choice that takes it; the server would
+        // refuse the decision otherwise.
+        const takesFeedback =
+          request.availableChoices.find((choice) => choice.choiceId === choiceId)?.acceptsFeedback === true;
+        const feedback = takesFeedback ? answer?.feedback?.trim() || undefined : undefined;
+        resolve(feedback === undefined ? { choiceId } : { choiceId, feedback });
         this.emit({ type: "approvalDone", id: request.approvalId });
       };
       this.approvalWaiters.add(finish);
@@ -909,12 +1009,23 @@ export class MuseHost {
         .askApproval({
           type: "approval",
           id: request.approvalId,
+          kind: request.subject.kind,
           title: card.title,
-          detail: card.detail,
-          choices: request.availableChoices.map((choice) => ({ id: choice.choiceId, label: choice.label })),
+          ...(card.detail === undefined ? {} : { detail: card.detail }),
+          ...(card.stageLine === undefined ? {} : { stage: card.stageLine }),
+          // Muse's own labels, in its order.
+          choices: request.availableChoices.map((choice) => {
+            const hint = shell ? choiceHint(choice) : undefined;
+            return {
+              id: choice.choiceId,
+              label: choice.label,
+              ...(choice.acceptsFeedback === true ? { acceptsFeedback: true as const } : {}),
+              ...(hint === undefined ? {} : { hint }),
+            };
+          }),
         })
         .then(
-          (choiceId) => finish(choiceId),
+          (answer) => finish(answer),
           () => finish(undefined),
         );
     });
@@ -1005,7 +1116,8 @@ export class MuseHost {
             fallbackText: item.fallbackText,
             commandText: item.commandText,
           },
-          this.sandboxBugNoted,
+          // The sandbox-bug line only applies when the workaround is off.
+          this.sandboxOff() || this.sandboxBugNoted,
         );
         if (row.failed && isSandboxBugFailure(item.failureReason)) {
           this.sandboxBugNoted = true;
@@ -1112,7 +1224,7 @@ export class MuseHost {
         text: "I can't find Muse Code. Install it with: `irm https://dev.meta.ai/install.ps1 | iex`, then run `muse` once to log in.",
         copy: "irm https://dev.meta.ai/install.ps1 | iex",
       });
-    } else if (await this.sandboxNeedsSetup()) {
+    } else if (!this.sandboxOff() && (await this.sandboxNeedsSetup())) {
       if (gen !== this.turnGen) {
         return;
       }
@@ -1161,21 +1273,45 @@ export class MuseHost {
 }
 
 /**
+ * The `muse serve` args: the trust flag, plus --disable-sandbox on Windows
+ * while the sandbox workaround is on (Muse bug: every shell command fails in
+ * serve mode). One helper so it's easy to remove the day Meta fixes it.
+ */
+export function serveArgs(platform: string, trustWorkspace: boolean, workaround: boolean): string[] {
+  const args = ["serve"];
+  if (trustWorkspace) {
+    args.push("--trust-workspace");
+  }
+  if (platform === "win32" && workaround) {
+    args.push("--disable-sandbox");
+  }
+  return args;
+}
+
+/**
  * The SDK connection holds ONE notification handler, and the facade client
  * claims it for session routing in its constructor — registering ours after
  * that replaces the router and starves every turn of its events (all turns
  * hang). Chain registrations instead: every handler fires, newest first, so
- * ours can never be skipped by a facade throw. Must run before `new
- * MuseClient` so the constructor's registration is chained too.
+ * ours can never be skipped by a facade throw. Each call is guarded, so one
+ * throwing handler can't stop the rest; the error goes to onError. Must run
+ * before `new MuseClient` so the constructor's registration is chained too.
  */
-export function chainNotifications(connection: HostConnection): void {
+export function chainNotifications(
+  connection: HostConnection,
+  onError?: (error: unknown) => void,
+): void {
   const raw = connection.onNotification.bind(connection);
   const handlers: ((notification: Notification) => void)[] = [];
   connection.onNotification = (handler) => {
     handlers.push(handler);
     raw((notification) => {
       for (let index = handlers.length - 1; index >= 0; index -= 1) {
-        handlers[index]?.(notification);
+        try {
+          handlers[index]?.(notification);
+        } catch (error) {
+          onError?.(error);
+        }
       }
     });
   };

@@ -91,7 +91,12 @@ import {
 import { findGitBin, formatUndoTime, NoGitError, ShadowSnapshots } from "./safety/snapshots.js";
 import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
-import { type ApprovalCardEvent, MuseHost, type MuseHostEvent } from "./muse/museHost.js";
+import {
+  type ApprovalAnswer,
+  type ApprovalCardEvent,
+  MuseHost,
+  type MuseHostEvent,
+} from "./muse/museHost.js";
 
 /** One attached chat surface: the editor panel or the sidebar view. */
 export interface ChatSink {
@@ -131,6 +136,7 @@ const WELCOMED_KEY = "metaBetta.welcomed";
 const GOAL_KEY = "metaBetta.goal";
 const EFFORT_KEY = "metaBetta.effort";
 const DAILY_USAGE_KEY = "metaBetta.dailyUsage";
+const SHELL_NOTICE_KEY = "metaBetta.shellNoticeShown";
 /** Heartbeat + quick-save check, every 10 seconds. */
 const TICK_MS = 10_000;
 /** A quick save also fires after this many turns, whatever the clock says. */
@@ -192,7 +198,9 @@ export class ChatController {
   private gitBinCache: string | undefined;
   private shadowCache: { folder: string; bin: string; shadow: ShadowSnapshots } | undefined;
   private readonly tickTimer: ReturnType<typeof setInterval>;
-  private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
+  private approvalResolvers = new Map<string, (answer: ApprovalAnswer | undefined) => void>();
+  /** True once the host runs with the Windows sandbox off (workaround on). */
+  private shellWorkaround = false;
   private cardCounter = 0;
   private cardHandlers = new Map<string, CardHandlers>();
   private lastUsage: SessionUsageTotals | undefined;
@@ -1442,8 +1450,10 @@ export class ChatController {
     this.recordAndBroadcast({ type: "notice", kind: "error", text: fallback });
   }
 
-  public approve(id: string, choiceId: string): void {
-    this.approvalResolvers.get(id)?.(choiceId);
+  public approve(id: string, choiceId: string, feedback?: string): void {
+    this.approvalResolvers.get(id)?.(
+      feedback === undefined || feedback.trim() === "" ? { choiceId } : { choiceId, feedback },
+    );
     this.approvalResolvers.delete(id);
   }
 
@@ -1746,13 +1756,17 @@ export class ChatController {
   }
 
   private createHost(trustWorkspace: boolean): MuseHost {
+    const config = vscode.workspace.getConfiguration("metaBetta");
+    const workaround = config.get<boolean>("windowsSandboxWorkaround", true);
+    this.shellWorkaround = process.platform === "win32" && workaround;
     return new MuseHost({
-      museBin: findMuseBin(vscode.workspace.getConfiguration("metaBetta").get<string>("museBin", "")),
+      museBin: findMuseBin(config.get<string>("museBin", "")),
       version: readVersion(this.extensionUri),
       trustWorkspace,
       emit: (event) => this.onHostEvent(event),
       askApproval: (card) => this.askApproval(card),
       log: (message) => this.log(message),
+      sandboxWorkaround: workaround,
       sessionStore: {
         loadId: () => this.storage.get<string>(SESSION_ID_KEY),
         saveId: (id) => {
@@ -1903,13 +1917,33 @@ export class ChatController {
     // Thinking and tool rows stay out of the chat during a save.
   }
 
-  private askApproval(card: ApprovalCardEvent): Promise<string | undefined> {
+  private askApproval(card: ApprovalCardEvent): Promise<ApprovalAnswer | undefined> {
     if (this.sinks.size === 0 || !this.running) {
       return Promise.resolve(undefined);
     }
     return new Promise((resolve) => {
       this.approvalResolvers.set(card.id, resolve);
+      this.maybeShellNotice(card);
       this.recordAndBroadcast(card);
+    });
+  }
+
+  /**
+   * One plain line the first time a command card appears (Windows workaround
+   * only), then never again for this folder.
+   */
+  private maybeShellNotice(card: ApprovalCardEvent): void {
+    if (card.kind !== "shell" || !this.shellWorkaround) {
+      return;
+    }
+    if (this.storage.get<boolean>(SHELL_NOTICE_KEY) === true) {
+      return;
+    }
+    this.storeSet(SHELL_NOTICE_KEY, true);
+    this.recordAndBroadcast({
+      type: "notice",
+      kind: "info",
+      text: "Muse's Windows sandbox has a bug right now, so I'll ask you before running any command. ↩ Undo still works on every change.",
     });
   }
 
@@ -2032,7 +2066,8 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     return;
   }
   if (message.type === "approve" && typeof message.id === "string" && typeof message.choiceId === "string") {
-    controller.approve(message.id, message.choiceId);
+    const feedback = typeof message.feedback === "string" ? message.feedback : undefined;
+    controller.approve(message.id, message.choiceId, feedback);
     return;
   }
   if (message.type === "openLink" && typeof message.url === "string") {

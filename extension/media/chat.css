@@ -250,6 +250,28 @@ body {
   margin: 0 0 6px;
 }
 
+.approval-stage {
+  margin: 0 0 6px;
+}
+
+.approval pre.approval-full {
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  max-height: 80px;
+}
+
+.approval-why {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font: inherit;
+}
+
 .approval pre {
   margin: 0 0 8px;
   padding: 6px;

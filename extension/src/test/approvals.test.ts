@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { approvalCard, safestChoiceId } from "../lib/approvals.js";
+import { approvalCard, choiceHint, currentStage, safestChoiceId } from "../lib/approvals.js";
 
 describe("approvalCard", () => {
   it("names shell commands", () => {
@@ -37,6 +37,69 @@ describe("approvalCard", () => {
   it("bounds long details", () => {
     const card = approvalCard({ kind: "shell", command: "x".repeat(500) }, "bash", "");
     assert.equal(card.detail?.length, 300);
+  });
+
+  it("shows the current step for a multi-stage command", () => {
+    const full = "New-Item -ItemType Directory mb-probe-dir; Remove-Item mb-probe-dir; Write-Output sandbox-ok";
+    const card = approvalCard(
+      {
+        kind: "shell",
+        command: full,
+        stages: [
+          { argv: ["New-Item", "-ItemType", "Directory", "mb-probe-dir"], position: 1, totalStages: 3 },
+          { argv: ["Remove-Item", "mb-probe-dir"], position: 2, totalStages: 3 },
+          { argv: ["Write-Output", "sandbox-ok"], position: 3, totalStages: 3 },
+        ],
+      },
+      "bash",
+      "",
+      1,
+    );
+    assert.equal(card.title, "Muse wants to run a command");
+    assert.equal(card.stageLine, "(step 2 of 3) Remove-Item mb-probe-dir");
+    assert.equal(card.detail, full);
+  });
+
+  it("skips the step line for a single stage", () => {
+    const card = approvalCard(
+      {
+        kind: "shell",
+        command: "node --version",
+        stages: [{ argv: ["node", "--version"], position: 1, totalStages: 1 }],
+      },
+      "bash",
+      "",
+      0,
+    );
+    assert.deepEqual(card, { title: "Muse wants to run a command", detail: "node --version" });
+  });
+});
+
+describe("currentStage", () => {
+  const stages = [
+    { argv: ["a"], position: 1, totalStages: 2 },
+    { argv: ["b"], position: 2, totalStages: 2 },
+  ];
+
+  it("picks the stage by source index, else the first", () => {
+    assert.equal(currentStage(stages, 1)?.argv, stages[1]?.argv);
+    assert.equal(currentStage(stages, 9)?.argv, stages[0]?.argv);
+  });
+
+  it("is undefined without stages", () => {
+    assert.equal(currentStage(undefined, 0), undefined);
+    assert.equal(currentStage([], 0), undefined);
+  });
+});
+
+describe("choiceHint", () => {
+  it("hints the always-allow choice only", () => {
+    assert.equal(
+      choiceHint({ scope: "localPersistent", decision: "approvedPolicyAmendment" }),
+      "Muse won't ask again for commands starting with this, in this project only.",
+    );
+    assert.equal(choiceHint({ scope: "once", decision: "approved" }), undefined);
+    assert.equal(choiceHint({ scope: "once", decision: "abort" }), undefined);
   });
 });
 

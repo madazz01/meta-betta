@@ -102,6 +102,11 @@
           "type": "string",
           "default": "",
           "description": "Copy brain/ here after every save, under this workspace's folder name. Empty = off. Point it at a synced folder (Drive, OneDrive, Dropbox) for a free cloud copy."
+        },
+        "metaBetta.windowsSandboxWorkaround": {
+          "type": "boolean",
+          "default": true,
+          "description": "Muse's Windows sandbox has a bug in serve mode. When on, the sandbox is off and Muse asks before every command."
         }
       }
     }

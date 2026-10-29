@@ -1,10 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { FoldedItem, TurnOutcome } from "@muse-code/sdk";
-import type { Notification } from "@muse-code/sdk/dist/src/msp.js";
+import type { ApprovalRequestParams, Notification } from "@muse-code/sdk/dist/src/msp.js";
 import {
   chainNotifications,
   MuseHost,
+  serveArgs,
+  type ApprovalAnswer,
+  type ApprovalCardEvent,
   type HostClient,
   type HostConnection,
   type HostSession,
@@ -171,6 +174,8 @@ function fakeCommands(options: {
   requests?: Record<string, Record<string, unknown>>;
   commands?: Record<string, Record<string, unknown>>;
   sessions?: Record<string, HostSession>;
+  failCommands?: string[];
+  hostOptions?: { sandboxWorkaround?: boolean; platform?: string };
 }): ScriptedFake {
   const events: MuseHostEvent[] = [];
   const requests: ScriptedFake["requests"] = [];
@@ -193,6 +198,9 @@ function fakeCommands(options: {
   const connection: HostConnection = {
     command: async (method, params) => {
       commands.push({ method, params });
+      if (options.failCommands?.includes(method)) {
+        throw new Error(`${method} failed`);
+      }
       return options.commands?.[method] ?? { status: "accepted", commandId: "cmd-1" };
     },
     request: async (method, params) => {
@@ -208,6 +216,7 @@ function fakeCommands(options: {
       museBin: "unused",
       version: "0.0.1",
       trustWorkspace: false,
+      ...(options.hostOptions ?? {}),
       emit: (event) => {
         events.push(event);
       },
@@ -267,7 +276,247 @@ describe("chainNotifications", () => {
     slot?.({ jsonrpc: "2.0", method: "session/tokenUsage", params: {} });
     assert.deepEqual(seen, ["ours", "facade"]);
   });
+
+  it("keeps delivering after a handler throws", () => {
+    let slot: ((notification: Notification) => void) | undefined;
+    const connection: HostConnection = {
+      command: async () => ({}),
+      request: async () => ({}),
+      onNotification: (handler) => {
+        slot = handler;
+      },
+    };
+    const failures: unknown[] = [];
+    chainNotifications(connection, (error) => {
+      failures.push(error);
+    });
+    const seen: string[] = [];
+    connection.onNotification(() => {
+      seen.push("first");
+    });
+    connection.onNotification(() => {
+      throw new Error("boom");
+    });
+    connection.onNotification(() => {
+      seen.push("last");
+    });
+    slot?.({ jsonrpc: "2.0", method: "session/tokenUsage", params: {} });
+    assert.deepEqual(seen, ["last", "first"]);
+    assert.equal(failures.length, 1);
+  });
 });
+
+describe("serveArgs", () => {
+  it("adds --disable-sandbox on Windows while the workaround is on", () => {
+    assert.deepEqual(serveArgs("win32", true, true), ["serve", "--trust-workspace", "--disable-sandbox"]);
+    assert.deepEqual(serveArgs("win32", false, true), ["serve", "--disable-sandbox"]);
+  });
+
+  it("leaves other platforms and the setting-off path alone", () => {
+    assert.deepEqual(serveArgs("win32", true, false), ["serve", "--trust-workspace"]);
+    assert.deepEqual(serveArgs("darwin", true, true), ["serve", "--trust-workspace"]);
+    assert.deepEqual(serveArgs("linux", false, true), ["serve"]);
+  });
+});
+
+describe("prompt mode", () => {
+  const SAFE_LINE = "I couldn't make Muse ask before running commands, so I've stopped to be safe.";
+
+  it("confirms promptUnmatched once after opening, then runs the turn", async () => {
+    const fake = fakeCommands({
+      commands: {
+        "session/setApprovalMode": {
+          status: "accepted",
+          commandId: "cmd-1",
+          effectiveMode: { mode: "promptUnmatched", source: "approvalReconfigure", lastCommandId: "cmd-1" },
+        },
+      },
+      hostOptions: { sandboxWorkaround: true, platform: "win32" },
+    });
+    await fake.host.send("run node --version", process.cwd());
+    assert.deepEqual(
+      fake.commands.filter((entry) => entry.method === "session/setApprovalMode"),
+      [{ method: "session/setApprovalMode", params: { sessionId: "session-1", mode: "promptUnmatched" } }],
+    );
+    assert.ok(fake.events.some((event) => event.type === "status" && event.text === "Muse is thinking…"));
+    assert.ok(fake.events.some((event) => event.type === "turn" && event.state === "done"));
+    assert.ok(fake.events.some((event) => event.type === "status" && event.text === "Ready"));
+    await fake.host.dispose();
+  });
+
+  it("blocks the turn when setApprovalMode fails", async () => {
+    const fake = fakeCommands({
+      failCommands: ["session/setApprovalMode"],
+      hostOptions: { sandboxWorkaround: true, platform: "win32" },
+    });
+    await fake.host.send("run node --version", process.cwd());
+    assert.ok(fake.events.some((event) => event.type === "notice" && event.text === SAFE_LINE));
+    assert.ok(!fake.events.some((event) => event.type === "status" && event.text === "Muse is thinking…"));
+    assert.ok(fake.events.some((event) => event.type === "turn" && event.state === "done"));
+    assert.ok(fake.events.some((event) => event.type === "status" && event.text === "Ready"));
+    assert.ok(fake.logs.some((line) => line.startsWith("approval mode: setApprovalMode failed")));
+    await fake.host.dispose();
+  });
+
+  it("blocks the turn when the server confirms another mode", async () => {
+    const fake = fakeCommands({
+      commands: {
+        "session/setApprovalMode": {
+          status: "accepted",
+          commandId: "cmd-1",
+          effectiveMode: { mode: "onRequest", source: "startup", lastCommandId: null },
+        },
+      },
+      hostOptions: { sandboxWorkaround: true, platform: "win32" },
+    });
+    await fake.host.send("run node --version", process.cwd());
+    assert.ok(fake.events.some((event) => event.type === "notice" && event.text === SAFE_LINE));
+    assert.ok(!fake.events.some((event) => event.type === "status" && event.text === "Muse is thinking…"));
+    assert.ok(fake.events.some((event) => event.type === "turn" && event.state === "done"));
+    assert.ok(fake.events.some((event) => event.type === "status" && event.text === "Ready"));
+    assert.ok(fake.logs.some((line) => line.includes("expected promptUnmatched, got onRequest")));
+    await fake.host.dispose();
+  });
+
+  it("sends no setApprovalMode when the workaround is off or off Windows", async () => {
+    const off = fakeCommands({ hostOptions: { sandboxWorkaround: false, platform: "win32" } });
+    await off.host.send("hi", process.cwd());
+    assert.ok(off.commands.every((entry) => entry.method !== "session/setApprovalMode"));
+    await off.host.dispose();
+    const mac = fakeCommands({ hostOptions: { sandboxWorkaround: true, platform: "darwin" } });
+    await mac.host.send("hi", process.cwd());
+    assert.ok(mac.commands.every((entry) => entry.method !== "session/setApprovalMode"));
+    await mac.host.dispose();
+  });
+});
+
+const SHELL_COMMAND = "New-Item mb-probe-dir; Remove-Item mb-probe-dir; Write-Output sandbox-ok";
+
+/** Recorded shape: 3 shell stages at step 2, Muse's own three choices. */
+function shellRequest(): ApprovalRequestParams {
+  return {
+    approvalId: "appr-1",
+    availableChoices: [
+      { choiceId: "allow_once", decision: "approved", label: "Allow once", scope: "once" },
+      {
+        choiceId: "allow_local_prefix",
+        decision: "approvedPolicyAmendment",
+        label: "Always allow in this workspace: New-Item ...",
+        scope: "localPersistent",
+      },
+      { choiceId: "abort", decision: "abort", label: "Reject", scope: "once", acceptsFeedback: true },
+    ],
+    currentRequirementId: { approvalId: "appr-1", sourceIndex: 1 },
+    subject: {
+      kind: "shell",
+      command: SHELL_COMMAND,
+      stages: [
+        { argv: ["New-Item", "mb-probe-dir"], position: 1, totalStages: 3 },
+        { argv: ["Remove-Item", "mb-probe-dir"], position: 2, totalStages: 3 },
+        { argv: ["Write-Output", "sandbox-ok"], position: 3, totalStages: 3 },
+      ],
+    },
+    toolName: "bash",
+    rawArgs: "{}",
+  } as unknown as ApprovalRequestParams;
+}
+
+describe("approval cards", () => {
+  it("cards a shell request with its step, labels and hints", async () => {
+    const fake = fakeApprovalHost({ choiceId: "abort", feedback: "use mkdir instead" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(await fake.decide(shellRequest()), { choiceId: "abort", feedback: "use mkdir instead" });
+    assert.equal(fake.cards.length, 1);
+    const card = fake.cards[0];
+    assert.equal(card?.kind, "shell");
+    assert.equal(card?.title, "Muse wants to run a command");
+    assert.equal(card?.stage, "(step 2 of 3) Remove-Item mb-probe-dir");
+    assert.equal(card?.detail, SHELL_COMMAND);
+    assert.deepEqual(
+      card?.choices.map((choice) => choice.label),
+      ["Allow once", "Always allow in this workspace: New-Item ...", "Reject"],
+    );
+    assert.equal(
+      card?.choices[1]?.hint,
+      "Muse won't ask again for commands starting with this, in this project only.",
+    );
+    assert.equal(card?.choices[0]?.hint, undefined);
+    assert.equal(card?.choices[2]?.acceptsFeedback, true);
+    assert.equal(card?.choices[0]?.acceptsFeedback, undefined);
+    assert.ok(fake.events.some((event) => event.type === "approvalDone" && event.id === "appr-1"));
+    await fake.host.dispose();
+  });
+
+  it("drops feedback for a choice that doesn't take it", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once", feedback: "whatever" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(await fake.decide(shellRequest()), { choiceId: "allow_once" });
+    await fake.host.dispose();
+  });
+
+  it("falls back to the safest choice when the panel can't ask", async () => {
+    const fake = fakeApprovalHost(undefined);
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(await fake.decide(shellRequest()), { choiceId: "abort" });
+    await fake.host.dispose();
+  });
+});
+
+interface ApprovalFake {
+  host: MuseHost;
+  events: MuseHostEvent[];
+  cards: ApprovalCardEvent[];
+  decide: (request: ApprovalRequestParams) => Promise<ApprovalAnswer>;
+}
+
+/** Captures the registered approval handler plus the card it builds. */
+function fakeApprovalHost(answer: ApprovalAnswer | undefined): ApprovalFake {
+  const events: MuseHostEvent[] = [];
+  const cards: ApprovalCardEvent[] = [];
+  let handler: ((request: ApprovalRequestParams) => Promise<ApprovalAnswer>) | undefined;
+  const session: HostSession = {
+    sessionId: "session-1",
+    sendUserTurn: async () => cannedTurn([]),
+    onApproval: (candidate) => {
+      handler = candidate as (request: ApprovalRequestParams) => Promise<ApprovalAnswer>;
+    },
+    onApprovalError: () => undefined,
+    fold: { items: { list: () => [] } },
+  };
+  const client: HostClient = {
+    startSession: async () => session,
+    resumeSession: async () => session,
+    close: async () => undefined,
+  };
+  const connection: HostConnection = {
+    command: async () => ({}),
+    request: async () => ({}),
+    onNotification: () => undefined,
+  };
+  return {
+    host: new MuseHost({
+      museBin: "unused",
+      version: "0.0.1",
+      trustWorkspace: false,
+      emit: (event) => {
+        events.push(event);
+      },
+      askApproval: (card) => {
+        cards.push(card);
+        return Promise.resolve(answer);
+      },
+      createHost: async () => ({ client, connection }),
+    }),
+    events,
+    cards,
+    decide: (request) => {
+      if (!handler) {
+        throw new Error("no approval handler registered");
+      }
+      return handler(request);
+    },
+  };
+}
 
 describe("prepare status", () => {
   it("says Ready once the host is up", async () => {
