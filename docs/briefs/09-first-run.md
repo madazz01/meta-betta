@@ -24,7 +24,7 @@ From "just installed the extension" to "Muse is ready ✓" with no terminal know
 
 ## Done when
 - Build + tests pass.
-- On a machine without Muse: click Install → Meta's installer runs in a terminal → paste key → (Windows) sandbox setup → "Muse is ready ✓" → welcome.
+- On a machine without Muse: click Install → "Installing Muse Code…" with progress in the chat → paste key → (Windows) sandbox setup → "Muse is ready ✓" → welcome.
 - With a pasted key, `muse serve` gets `META_API_KEY`, and the key is not stored anywhere but SecretStorage.
 
 ## Handover
