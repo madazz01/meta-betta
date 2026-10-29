@@ -274,6 +274,11 @@ body {
   color: var(--vscode-errorForeground);
 }
 
+.bubble.assistant.catching-up {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
 .bubble.assistant a {
   color: var(--vscode-textLink-foreground);
 }

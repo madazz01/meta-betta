@@ -15,6 +15,7 @@
   const openFolderButton = document.getElementById("open-folder");
 
   let running = false;
+  let catchingUpEl = null;
   const assistantEls = new Map();
   const thinkingEls = new Map();
   const toolEls = new Map();
@@ -37,7 +38,26 @@
     input.disabled = next;
     sendButton.textContent = next ? "Stop" : "Send";
     if (!next) {
+      dropCatchingUp();
       input.focus();
+    }
+  }
+
+  function showCatchingUp(text) {
+    hideEmptyState();
+    if (!catchingUpEl) {
+      catchingUpEl = document.createElement("div");
+      catchingUpEl.className = "bubble assistant catching-up";
+      messagesEl.appendChild(catchingUpEl);
+    }
+    catchingUpEl.textContent = text;
+    scrollToBottom();
+  }
+
+  function dropCatchingUp() {
+    if (catchingUpEl) {
+      catchingUpEl.remove();
+      catchingUpEl = null;
     }
   }
 
@@ -61,6 +81,7 @@
 
   function upsertAssistant(id, text) {
     hideEmptyState();
+    dropCatchingUp();
     let bubble = assistantEls.get(id);
     if (!bubble) {
       bubble = document.createElement("div");
@@ -186,6 +207,7 @@
   }
 
   function clearChat() {
+    dropCatchingUp();
     messagesEl.replaceChildren();
     assistantEls.clear();
     thinkingEls.clear();
@@ -292,6 +314,11 @@
         break;
       case "clear":
         clearChat();
+        break;
+      case "catchingUp":
+        if (typeof message.text === "string") {
+          showCatchingUp(message.text);
+        }
         break;
       case "sessionLabel":
         if (typeof message.label === "string") {

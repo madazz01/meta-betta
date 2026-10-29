@@ -14,6 +14,7 @@ import type {
   TurnOutcome,
 } from "@muse-code/sdk";
 import type { ApprovalRequestParams, ItemDeltaParams } from "@muse-code/sdk/dist/src/msp.js";
+import { stripBackgroundPrefix } from "../brain/brain.js";
 import { approvalCard, safestChoiceId } from "../lib/approvals.js";
 import { historyEvent, reasoningText, toolRowText } from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
@@ -396,10 +397,21 @@ export class MuseHost {
         displayText: item.displayText,
         summary: item.summary,
       });
-      if (event) {
-        this.emit(event);
-        count += 1;
+      if (!event) {
+        continue;
       }
+      if (event.type === "user") {
+        // Resumed quiet-start messages carry the background block; replay
+        // only the user's own words.
+        const text = stripBackgroundPrefix(event.text);
+        if (!text) {
+          continue;
+        }
+        this.emit({ type: "user", text });
+      } else {
+        this.emit(event);
+      }
+      count += 1;
     }
     return count;
   }

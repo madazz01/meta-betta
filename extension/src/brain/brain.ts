@@ -204,6 +204,140 @@ export function formatSessionLabel(id: string, topic: string): string {
   return topic ? `Session ${id} · ${topic}` : `Session ${id}`;
 }
 
+export interface BrainFiles {
+  me?: string;
+  project?: string;
+  tricks?: string;
+  todayLog?: string;
+}
+
+const BACKGROUND_START = "[Background:";
+const BACKGROUND_END = "[End of background.]";
+const BACKGROUND_BUDGET = 8000;
+const SECTION_BUDGETS = { me: 1500, startHere: 1500, tricks: 1000, todayLog: 1000 };
+
+/**
+ * The background block sent with the first message of a chat: what the brain
+ * remembers, marked as background, with a note telling Muse to open with
+ * "Here's where we're up to:" from it. Missing sections are skipped; when the
+ * block would run over budget, the oldest updates are dropped first so the
+ * newest are always kept. Empty when the brain has nothing to say.
+ */
+export function buildBackgroundBlock(files: BrainFiles): string {
+  const me = capSection(files.me, SECTION_BUDGETS.me);
+  const startHere = capSection(projectStartHere(files.project), SECTION_BUDGETS.startHere);
+  const tricks = capSection(files.tricks, SECTION_BUDGETS.tricks);
+  const todayLog = capSection(files.todayLog, SECTION_BUDGETS.todayLog);
+  const updates = lastUpdates(files.project, 10);
+
+  const framing =
+    `${BACKGROUND_START} what I remember about you and this project. ` +
+    `Open with 'Here's where we're up to:' from this. No need to read the brain files.]\n\n`;
+  const fixed: string[] = [];
+  if (me) {
+    fixed.push(`## About you\n${me}`);
+  }
+  if (startHere) {
+    fixed.push(`## Project: START HERE\n${startHere}`);
+  }
+  if (tricks) {
+    fixed.push(`## Tricks\n${tricks}`);
+  }
+  if (todayLog) {
+    fixed.push(`## Today's log\n${todayLog}`);
+  }
+
+  // Updates take whatever budget is left, newest first so the newest survive.
+  let budget = BACKGROUND_BUDGET - framing.length - BACKGROUND_END.length - 4 - fixed.join("\n\n").length;
+  const kept: string[] = [];
+  for (let index = updates.length - 1; index >= 0; index -= 1) {
+    const entry = updates[index] ?? "";
+    if (entry.length + 2 <= budget) {
+      kept.unshift(entry);
+      budget -= entry.length + 2;
+    }
+  }
+
+  const sections: string[] = [];
+  for (const section of fixed) {
+    sections.push(section);
+    if (kept.length > 0 && section.startsWith("## Project")) {
+      sections.push(`## Latest updates\n${kept.join("\n\n")}`);
+    }
+  }
+  if (kept.length > 0 && !startHere) {
+    sections.splice(me ? 1 : 0, 0, `## Latest updates\n${kept.join("\n\n")}`);
+  }
+  if (sections.length === 0) {
+    return "";
+  }
+  return `${framing}${sections.join("\n\n")}\n\n${BACKGROUND_END}`;
+}
+
+function capSection(content: string | undefined, maxLength: number): string {
+  const text = (content ?? "").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+/** The full START HERE section of project.md, or undefined without one. */
+export function projectStartHere(content: string | undefined): string | undefined {
+  if (!content) {
+    return undefined;
+  }
+  const lines = content.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "## START HERE");
+  if (start === -1) {
+    return undefined;
+  }
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => line.trim().startsWith("## "));
+  const section = (end === -1 ? rest : rest.slice(0, end)).join("\n").trim();
+  return section === "" ? undefined : section;
+}
+
+/** Updates entries from project.md, oldest first, newest `count` kept. */
+export function lastUpdates(content: string | undefined, count: number): string[] {
+  if (!content) {
+    return [];
+  }
+  const lines = content.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "## Updates");
+  if (start === -1) {
+    return [];
+  }
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => line.trim().startsWith("## "));
+  const section = end === -1 ? rest : rest.slice(0, end);
+  const entries: string[] = [];
+  let current: string[] = [];
+  for (const line of section) {
+    if (line.startsWith("### ")) {
+      if (current.length > 0) {
+        entries.push(current.join("\n").trim());
+      }
+      current = [line];
+    } else if (current.length > 0) {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) {
+    entries.push(current.join("\n").trim());
+  }
+  return entries.filter((entry) => entry.length > 0).slice(-count);
+}
+
+/** Remove our background block from a resumed user message, if present. */
+export function stripBackgroundPrefix(text: string): string {
+  if (!text.startsWith(BACKGROUND_START)) {
+    return text;
+  }
+  const end = text.indexOf(BACKGROUND_END);
+  if (end === -1) {
+    return text;
+  }
+  return text.slice(end + BACKGROUND_END.length).replace(/^\s+/, "");
+}
+
 export interface StoredSessionLabel {
   id: string;
   topic: string;
@@ -287,15 +421,33 @@ function firstLines(content: string, count: number): string {
 
 /** The START HERE section of project.md (up to the next heading). */
 export function startHereSection(content: string): string {
-  const lines = content.split("\n");
-  const start = lines.findIndex((line) => line.trim() === "## START HERE");
-  if (start === -1) {
-    return firstLines(content, 6);
+  return firstLines(projectStartHere(content) ?? content, 6);
+}
+
+/** A first name from me.md ("I'm Bryan", "my name is Bryan"), if any. */
+export function greetingName(meMd: string | undefined): string | undefined {
+  if (!meMd) {
+    return undefined;
   }
-  const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => line.trim().startsWith("## "));
-  const section = (end === -1 ? rest : rest.slice(0, end)).join("\n");
-  return firstLines(section, 6);
+  const pattern = /\b(?:my name is|i'm|i’m|i am|call me)\s+([A-Za-z][A-Za-z'-]*)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(meMd)) !== null) {
+    const word = match[1] ?? "";
+    if (!/^(a|an|the)$/i.test(word)) {
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    }
+  }
+  return undefined;
+}
+
+/** "Good morning Bryan, hold on a sec while I catch up…" for the placeholder. */
+export function catchUpGreeting(now: Date, meMd: string | undefined): string {
+  const hour = now.getHours();
+  const part = hour >= 5 && hour < 12 ? "morning" : hour >= 12 && hour < 18 ? "afternoon" : "evening";
+  const name = greetingName(meMd);
+  return name
+    ? `Good ${part} ${name}, hold on a sec while I catch up…`
+    : `Good ${part}, hold on a sec while I catch up…`;
 }
 
 /** "Today, 2:15pm", "Yesterday" or "28 Oct". */

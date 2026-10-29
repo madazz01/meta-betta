@@ -6,6 +6,8 @@ import { parseFileLink } from "./lib/links.js";
 import { buildTranscript, cleanTranscript } from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
 import {
+  buildBackgroundBlock,
+  catchUpGreeting,
   cleanSessionLabel,
   cleanTopic,
   continuedTopic,
@@ -13,6 +15,8 @@ import {
   ensureBrain,
   ensureFrontDoor,
   formatSessionLabel,
+  nodeBrainFs,
+  todayLogFile,
   topicFromFirstMessage,
 } from "./brain/brain.js";
 import { singleFlight } from "./lib/singleFlight.js";
@@ -51,6 +55,8 @@ export class ChatController {
   private prepared = false;
   private preparing: Promise<void> | undefined;
   private memoryAnnounced = false;
+  private memoryOn = false;
+  private liveReplySeen = false;
   private sessionId = createSessionId();
   private sessionTopic = "";
   private labelSettled = false;
@@ -144,7 +150,6 @@ export class ChatController {
     }
     // History first, so yesterday's messages stay above a fresh reply.
     await this.prepare();
-    const host = await this.ensureHost(folder);
     // "continue working on X" always starts a newly labelled episode, even
     // mid-conversation; any other first message just names the topic.
     const continued = continuedTopic(text);
@@ -162,7 +167,41 @@ export class ChatController {
       }
     }
     this.recordAndBroadcast({ type: "user", text });
-    await host.send(text, folder.uri.fsPath);
+    let host: MuseHost;
+    try {
+      host = await this.ensureHost(folder);
+    } catch (error) {
+      this.broadcast({
+        type: "notice",
+        kind: "error",
+        text: `Something went wrong: ${shortReason(error)}.`,
+      });
+      return;
+    }
+    await host.send(await this.withBackground(folder, text), folder.uri.fsPath);
+  }
+
+  /**
+   * On the first send before any live reply (memory on), read the brain and
+   * attach it as background, showing a friendly placeholder meanwhile.
+   */
+  private async withBackground(folder: vscode.WorkspaceFolder, text: string): Promise<string> {
+    if (!this.memoryOn || this.liveReplySeen) {
+      return text;
+    }
+    const root = folder.uri.fsPath;
+    const [me, project, tricks, todayLog] = await Promise.all([
+      nodeBrainFs.readFile(path.join(root, "brain", "me.md")).catch(() => undefined),
+      nodeBrainFs.readFile(path.join(root, "brain", "project.md")).catch(() => undefined),
+      nodeBrainFs.readFile(path.join(root, "brain", "tricks.md")).catch(() => undefined),
+      nodeBrainFs.readFile(path.join(root, "brain", todayLogFile())).catch(() => undefined),
+    ]);
+    const background = buildBackgroundBlock({ me, project, tricks, todayLog });
+    if (!background) {
+      return text;
+    }
+    this.broadcast({ type: "catchingUp", text: catchUpGreeting(new Date(), me) });
+    return `${background}\n\n${text}`;
   }
 
   public stop(): void {
@@ -204,6 +243,7 @@ export class ChatController {
     this.storeSet(TRANSCRIPT_KEY, undefined);
     this.running = false;
     this.lastStatus = "";
+    this.liveReplySeen = false;
     this.sessionId = createSessionId();
     this.sessionTopic = "";
     this.persistSessionLabel();
@@ -306,6 +346,7 @@ export class ChatController {
   private async ensureMemory(folder: vscode.WorkspaceFolder): Promise<boolean> {
     const setting = vscode.workspace.getConfiguration("metaBetta").get<boolean>("memory", true);
     const on = setting && vscode.workspace.isTrusted;
+    this.memoryOn = on;
     if (on) {
       await ensureBrain(folder.uri.fsPath);
       await ensureFrontDoor(folder.uri.fsPath);
@@ -400,6 +441,9 @@ export class ChatController {
       this.lastStatus = event.text;
       this.broadcast(event);
       return;
+    }
+    if (event.type === "assistant" && this.running) {
+      this.liveReplySeen = true;
     }
     this.recordAndBroadcast(event);
   }

@@ -4,7 +4,9 @@ import { join } from "node:path";
 import {
   appendEntry,
   brainCardInputs,
+  buildBackgroundBlock,
   buildBrainCards,
+  catchUpGreeting,
   cleanSessionLabel,
   cleanTopic,
   continuedTopic,
@@ -15,7 +17,9 @@ import {
   formatSessionLabel,
   formatUpdated,
   FRONT_DOOR_SECTION,
+  greetingName,
   startHereSection,
+  stripBackgroundPrefix,
   todayLogFile,
   topicFromFirstMessage,
   type BrainFs,
@@ -260,6 +264,125 @@ describe("brain cards", () => {
 describe("startHereSection", () => {
   it("falls back to the first lines without the heading", () => {
     assert.equal(startHereSection("# Nope\n\nJust text.\n"), "Just text.");
+  });
+});
+
+describe("buildBackgroundBlock", () => {
+  const project = [
+    "## START HERE",
+    "",
+    "We build widgets.",
+    "",
+    "## Updates",
+    "",
+    "### 2026-10-26 09:00 · Session aaaa · one",
+    "",
+    "First update.",
+    "",
+    "### 2026-10-27 09:00 · Session bbbb · two",
+    "",
+    "Second update.",
+    "",
+  ].join("\n");
+
+  it("marks the brain as background with the opening note", () => {
+    const block = buildBackgroundBlock({ me: "I'm Bryan.", project, tricks: "Restart it.", todayLog: "Did things." });
+    assert.ok(block.startsWith("[Background:"));
+    assert.ok(block.includes("Open with 'Here's where we're up to:' from this. No need to read the brain files."));
+    assert.ok(block.includes("## About you\nI'm Bryan."));
+    assert.ok(block.includes("## Project: START HERE\nWe build widgets."));
+    assert.ok(block.includes("## Latest updates\n### 2026-10-26 09:00 · Session aaaa · one\n\nFirst update."));
+    assert.ok(block.includes("## Tricks\nRestart it."));
+    assert.ok(block.includes("## Today's log\nDid things."));
+    assert.ok(block.endsWith("[End of background.]"));
+  });
+
+  it("skips missing files and empty sections", () => {
+    assert.equal(buildBackgroundBlock({}), "");
+    assert.equal(buildBackgroundBlock({ me: "", tricks: "  \n " }), "");
+    const block = buildBackgroundBlock({
+      me: "I'm Bryan.",
+      project: "## START HERE\n\nWidgets.\n",
+      todayLog: "",
+    });
+    assert.ok(!block.includes("## Latest updates"));
+    assert.ok(!block.includes("## Today's log"));
+    assert.ok(block.includes("Widgets."));
+  });
+
+  it("keeps only the newest 10 updates", () => {
+    const entries = Array.from(
+      { length: 12 },
+      (_, index) => `### 2026-10-28 09:${String(index).padStart(2, "0")} · Session x · ${index}\n\nUpdate ${index}.`,
+    );
+    const block = buildBackgroundBlock({ project: `## START HERE\n\nX.\n\n## Updates\n\n${entries.join("\n\n")}\n` });
+    assert.ok(!block.includes("Update 0."));
+    assert.ok(!block.includes("Update 1."));
+    assert.ok(block.includes("Update 2."));
+    assert.ok(block.includes("Update 11."));
+  });
+
+  it("stays within budget on a fat brain, newest updates kept", () => {
+    const fat = "x".repeat(5000);
+    const entries = Array.from({ length: 10 }, (_, index) => `### 2026-10-28 · ${index}\n\n${"y".repeat(1000)}`);
+    const block = buildBackgroundBlock({
+      me: fat,
+      project: `## START HERE\n\n${fat}\n\n## Updates\n\n${entries.join("\n\n")}\n`,
+      tricks: fat,
+      todayLog: fat,
+    });
+    assert.ok(block.length <= 8000, `block is ${block.length} chars`);
+    assert.ok(block.includes("### 2026-10-28 · 9"), "newest update kept");
+  });
+});
+
+describe("stripBackgroundPrefix", () => {
+  it("removes the block from a resumed user message", () => {
+    const block = buildBackgroundBlock({ me: "I'm Bryan." });
+    const combined = `${block}\n\nhello there`;
+    assert.equal(stripBackgroundPrefix(combined), "hello there");
+  });
+
+  it("leaves plain messages and broken markers alone", () => {
+    assert.equal(stripBackgroundPrefix("hello"), "hello");
+    assert.equal(stripBackgroundPrefix("[Background: oops"), "[Background: oops");
+  });
+});
+
+describe("greetingName", () => {
+  it("finds a first name", () => {
+    assert.equal(greetingName("I'm Bryan, a backend dev."), "Bryan");
+    assert.equal(greetingName("My name is ana."), "Ana");
+    assert.equal(greetingName("Call me jo."), "Jo");
+  });
+
+  it("skips articles and template text", () => {
+    assert.equal(greetingName("I am a developer. I'm Bryan."), "Bryan");
+    assert.equal(greetingName("Who you are and how you like answers."), undefined);
+    assert.equal(greetingName(undefined), undefined);
+    assert.equal(greetingName(""), undefined);
+  });
+});
+
+describe("catchUpGreeting", () => {
+  it("picks the part of day by the clock", () => {
+    assert.ok(catchUpGreeting(new Date(2026, 9, 28, 5, 0), undefined).startsWith("Good morning,"));
+    assert.ok(catchUpGreeting(new Date(2026, 9, 28, 11, 59), undefined).startsWith("Good morning,"));
+    assert.ok(catchUpGreeting(new Date(2026, 9, 28, 12, 0), undefined).startsWith("Good afternoon,"));
+    assert.ok(catchUpGreeting(new Date(2026, 9, 28, 17, 59), undefined).startsWith("Good afternoon,"));
+    assert.ok(catchUpGreeting(new Date(2026, 9, 28, 18, 0), undefined).startsWith("Good evening,"));
+    assert.ok(catchUpGreeting(new Date(2026, 9, 28, 4, 59), undefined).startsWith("Good evening,"));
+  });
+
+  it("names the user when me.md has a name", () => {
+    assert.equal(
+      catchUpGreeting(new Date(2026, 9, 28, 9, 0), "I'm Bryan."),
+      "Good morning Bryan, hold on a sec while I catch up…",
+    );
+    assert.equal(
+      catchUpGreeting(new Date(2026, 9, 28, 9, 0), undefined),
+      "Good morning, hold on a sec while I catch up…",
+    );
   });
 });
 
