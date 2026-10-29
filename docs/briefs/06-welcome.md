@@ -8,7 +8,7 @@ The first time someone opens Meta Betta in a workspace with an empty brain, a **
 ## Build
 1. Trigger: memory is on (trusted folder, brief 04) and `brain/me.md` is still the starter template. No trust card here: opening a trusted folder in VS Code is the setup, same as other chat extensions. (Skip button always visible.)
 2. Send Muse the welcome script (in `extension/src/brain/prompts.ts`). Muse runs it one step at a time, waiting for the user each step:
-   - **Hello:** "G'day! What should I call you?" → writes their name to `brain/me.md`.
+   - **Hello:** "G'day! What should I call you?" → the extension (not Muse, the brain only grows) appends a `Name: <name>` line to `brain/me.md`. Make `greetingName()` read a `Name:` line first (today it misses "Name: Bryan"; add a test), and keep the existing "I'm…/my name is…/call me…" fallbacks.
    - **What are we doing?** "What are we working on in this folder?" (a line or two is plenty) → writes the START HERE section of `brain/project.md`, then plays it back in one line.
    - **How I remember: ONE short message**, roughly:
      > "Quick one on how I remember: notes on you and this project live in `brain/` (the Brain panel; edit anything). I quick-save as we go, and 💾 **Save my day** writes up where we're up to. Close everything whenever; next time I start with 'Here's where we're up to'."
