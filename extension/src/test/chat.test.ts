@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appendMessage, canSend, formatEcho, parseSendMessage } from "../lib/chat.js";
+import { appendMessage, canSend, formatEcho, parseNudgeAnswer, parseSendMessage } from "../lib/chat.js";
 import { createNonce } from "../lib/nonce.js";
 
 describe("canSend", () => {
@@ -52,6 +52,29 @@ describe("parseSendMessage", () => {
     assert.equal(parseSendMessage({ type: "reply", text: "hi" }), undefined);
     assert.equal(parseSendMessage({ type: "send" }), undefined);
     assert.equal(parseSendMessage({ type: "send", text: 42 }), undefined);
+  });
+});
+
+describe("parseNudgeAnswer", () => {
+  it("accepts a card button press", () => {
+    assert.deepEqual(parseNudgeAnswer({ type: "nudgeAnswer", id: "a1", answer: "show", thing: "read photos" }), {
+      id: "a1",
+      answer: "show",
+      thing: "read photos",
+    });
+    assert.deepEqual(parseNudgeAnswer({ type: "nudgeAnswer", id: "a1", answer: "notnow" }), {
+      id: "a1",
+      answer: "notnow",
+      thing: "",
+    });
+  });
+
+  it("rejects other shapes", () => {
+    assert.equal(parseNudgeAnswer(undefined), undefined);
+    assert.equal(parseNudgeAnswer({ type: "nudgeAnswer", id: "a1", answer: "maybe" }), undefined);
+    assert.equal(parseNudgeAnswer({ type: "nudgeAnswer", id: "", answer: "show" }), undefined);
+    assert.equal(parseNudgeAnswer({ type: "nudgeAnswer", answer: "show" }), undefined);
+    assert.equal(parseNudgeAnswer({ type: "nudgeAnswer", id: "a1", answer: "show", thing: 42 }), undefined);
   });
 });
 

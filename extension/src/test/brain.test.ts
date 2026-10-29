@@ -38,6 +38,7 @@ import {
   UnsafeBackupError,
   welcomeName,
   withNameLine,
+  withNotInterested,
   withStartHere,
   type BackupOps,
   type BrainFs,
@@ -751,6 +752,73 @@ describe("front door rule 2", () => {
         "2. Unless brain/me.md is still the starter template (the extension runs a welcome instead)",
       ),
     );
+  });
+});
+
+describe("front door version", () => {
+  it("marks the section so existing workspaces get the update", () => {
+    assert.ok(FRONT_DOOR_SECTION.includes("<!-- meta-betta:version 2 -->"));
+  });
+});
+
+describe("front door rule 6", () => {
+  it("sizes the handover to the job and stays silent otherwise", () => {
+    assert.ok(FRONT_DOOR_SECTION.includes("6. Match your wrap-up to the size of the job."));
+    assert.ok(FRONT_DOOR_SECTION.includes('"Done: …", "To use it: …"'));
+    assert.ok(FRONT_DOOR_SECTION.includes('never write "Couldn\'t check: nothing"'));
+    assert.ok(FRONT_DOOR_SECTION.includes("No code dumps unless asked."));
+  });
+});
+
+describe("front door rule 10", () => {
+  it("allows one relevant nudge per session, never a declined thing", () => {
+    assert.ok(FRONT_DOOR_SECTION.includes("10. Nudge new tricks, at most one per session"));
+    assert.ok(FRONT_DOOR_SECTION.includes("never anything listed in brain/good-for.md"));
+    assert.ok(FRONT_DOOR_SECTION.includes('"not interested: …"'));
+    assert.ok(
+      FRONT_DOOR_SECTION.includes(
+        '"💡 Did you know I can also <thing>? Want me to show you on <their actual file>?"',
+      ),
+    );
+  });
+
+  it("hints the seed ideas with when each fits", () => {
+    assert.ok(FRONT_DOOR_SECTION.includes("undo any reply that changed files"));
+    assert.ok(FRONT_DOOR_SECTION.includes("use a workflow"));
+    assert.ok(FRONT_DOOR_SECTION.includes("read a screenshot or photo"));
+    assert.ok(FRONT_DOOR_SECTION.includes("when:"));
+  });
+});
+
+describe("front door rule 11", () => {
+  it("explains each technical word once, in brackets", () => {
+    assert.ok(
+      FRONT_DOOR_SECTION.includes(
+        "11. The first time you use a technical word with this person (e.g. .gitignore, commit, dependency)",
+      ),
+    );
+    assert.ok(FRONT_DOOR_SECTION.includes(".gitignore (the list of files git won't upload)"));
+  });
+});
+
+describe("front door rule 12", () => {
+  it("asks before acting on a bare observation", () => {
+    assert.ok(FRONT_DOOR_SECTION.includes("12. If the user is just noticing something"));
+    assert.ok(FRONT_DOOR_SECTION.includes("Want me to look at that?"));
+    assert.ok(FRONT_DOOR_SECTION.includes("Only act on a clear ask"));
+  });
+});
+
+describe("withNotInterested", () => {
+  it("notes a declined nudge once per thing", () => {
+    const once = withNotInterested("# About me\n", "write tests for it");
+    assert.ok(once.includes("not interested: write tests for it"));
+    assert.equal(withNotInterested(once, "write tests for it"), once);
+    assert.equal(withNotInterested(once, "Write Tests For It"), once);
+  });
+
+  it("ignores a blank thing", () => {
+    assert.equal(withNotInterested("# About me\n", "   "), "# About me\n");
   });
 });
 

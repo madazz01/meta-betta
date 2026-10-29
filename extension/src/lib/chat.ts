@@ -35,3 +35,37 @@ export function parseSendMessage(value: unknown): string | undefined {
   const trimmed = text.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }
+
+export interface NudgeAnswer {
+  /** Assistant message id the card belongs to. */
+  id: string;
+  answer: "show" | "notnow";
+  /** The offered thing, for the me.md decline note (may be empty). */
+  thing: string;
+}
+
+/**
+ * Validate a nudge card button press from the panel. Returns the answer, or
+ * undefined when the message isn't a well-formed "nudgeAnswer" message.
+ */
+export function parseNudgeAnswer(value: unknown): NudgeAnswer | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const { type, id, answer, thing } = value as {
+    type?: unknown;
+    id?: unknown;
+    answer?: unknown;
+    thing?: unknown;
+  };
+  if (type !== "nudgeAnswer" || typeof id !== "string" || id === "") {
+    return undefined;
+  }
+  if (answer !== "show" && answer !== "notnow") {
+    return undefined;
+  }
+  if (thing !== undefined && typeof thing !== "string") {
+    return undefined;
+  }
+  return { id, answer, thing: (thing ?? "").trim() };
+}

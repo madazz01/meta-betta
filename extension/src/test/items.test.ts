@@ -180,6 +180,17 @@ describe("historyEvent", () => {
     assert.equal(historyEvent({ kind: "reminderChild", itemId: "r2" }), undefined);
     assert.equal(historyEvent({ kind: "agentMessage", itemId: "a2" }), undefined);
   });
+
+  it("carries the recorded time for resumed messages", () => {
+    assert.deepEqual(
+      historyEvent({ kind: "userMessage", itemId: "u1", text: "hi", recordedAt: "2026-10-28T09:41:00.000Z" }),
+      { type: "user", text: "hi", at: Date.parse("2026-10-28T09:41:00.000Z") },
+    );
+    assert.deepEqual(
+      historyEvent({ kind: "agentMessage", itemId: "a1", text: "hello", recordedAt: "not a date" }),
+      { type: "assistant", id: "a1", text: "hello" },
+    );
+  });
 });
 
 describe("reasoningText", () => {

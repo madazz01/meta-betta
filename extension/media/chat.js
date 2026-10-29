@@ -24,6 +24,7 @@
   const toolEls = new Map();
   const approvalEls = new Map();
   const undoEls = new Map();
+  const nudgeEls = new Map();
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -44,6 +45,19 @@
     if (!next) {
       dropCatchingUp();
       input.focus();
+    }
+    updateNudgeButtons();
+  }
+
+  // Nudge answers send a new turn, so the buttons wait like the composer.
+  function updateNudgeButtons() {
+    for (const card of nudgeEls.values()) {
+      if (card.dataset.answered) {
+        continue;
+      }
+      for (const button of card.querySelectorAll("button")) {
+        button.disabled = running;
+      }
     }
   }
 
@@ -74,26 +88,126 @@
     return fallback.innerHTML;
   }
 
-  function addUserBubble(text) {
+  function addUserBubble(text, time) {
     hideEmptyState();
     const bubble = document.createElement("div");
     bubble.className = "bubble user";
-    bubble.textContent = text;
+    const body = document.createElement("div");
+    body.className = "user-text";
+    body.textContent = text;
+    bubble.appendChild(body);
+    if (typeof time === "string" && time) {
+      const clock = document.createElement("div");
+      clock.className = "msg-time";
+      clock.textContent = time;
+      bubble.appendChild(clock);
+    }
     messagesEl.appendChild(bubble);
     scrollToBottom();
   }
 
-  function upsertAssistant(id, text) {
+  function upsertAssistant(id, text, time) {
     hideEmptyState();
     dropCatchingUp();
     let bubble = assistantEls.get(id);
     if (!bubble) {
       bubble = document.createElement("div");
       bubble.className = "bubble assistant";
+      const body = document.createElement("div");
+      body.className = "assistant-text";
+      const clock = document.createElement("div");
+      clock.className = "msg-time";
+      bubble.appendChild(body);
+      bubble.appendChild(clock);
       messagesEl.appendChild(bubble);
       assistantEls.set(id, bubble);
     }
-    bubble.innerHTML = renderReply(text);
+    const nudge = findNudge(text);
+    const bodyText = nudge ? text.replace(nudge.paragraph, "").trim() : text;
+    bubble.querySelector(".assistant-text").innerHTML = renderReply(bodyText);
+    bubble.style.display = nudge && !bodyText ? "none" : "";
+    if (typeof time === "string" && time) {
+      bubble.querySelector(".msg-time").textContent = time;
+    }
+    if (nudge) {
+      upsertNudgeCard(id, nudge);
+    }
+    scrollToBottom();
+  }
+
+  // A 💡 paragraph (front-door rule 10) becomes a card with buttons.
+  function findNudge(text) {
+    const paragraphs = String(text).split(/\n\s*\n/);
+    for (const paragraph of paragraphs) {
+      const match = paragraph.match(/💡\s*Did you know I can also (.+?)\?/is);
+      if (match) {
+        return { paragraph, thing: match[1].replace(/\s+/g, " ").trim().slice(0, 120) };
+      }
+    }
+    return null;
+  }
+
+  function upsertNudgeCard(id, nudge) {
+    let card = nudgeEls.get(id);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "nudge";
+      const body = document.createElement("div");
+      body.className = "nudge-text";
+      const buttons = document.createElement("div");
+      buttons.className = "nudge-buttons";
+      const showButton = document.createElement("button");
+      showButton.type = "button";
+      showButton.className = "btn";
+      showButton.textContent = "Show me";
+      showButton.addEventListener("click", () => {
+        vscode.postMessage({ type: "nudgeAnswer", id, answer: "show", thing: nudge.thing });
+        disableNudge(id, "show");
+      });
+      const notnowButton = document.createElement("button");
+      notnowButton.type = "button";
+      notnowButton.className = "btn";
+      notnowButton.textContent = "Not now";
+      notnowButton.addEventListener("click", () => {
+        vscode.postMessage({ type: "nudgeAnswer", id, answer: "notnow", thing: nudge.thing });
+        disableNudge(id, "notnow");
+      });
+      buttons.appendChild(showButton);
+      buttons.appendChild(notnowButton);
+      card.appendChild(body);
+      card.appendChild(buttons);
+      messagesEl.appendChild(card);
+      nudgeEls.set(id, card);
+    }
+    if (!card.dataset.answered) {
+      card.querySelector(".nudge-text").innerHTML = renderReply(nudge.paragraph);
+    }
+    updateNudgeButtons();
+    scrollToBottom();
+  }
+
+  function disableNudge(id, answer) {
+    const card = nudgeEls.get(id);
+    if (!card || card.dataset.answered) {
+      return;
+    }
+    card.dataset.answered = "yes";
+    const buttons = card.querySelectorAll("button");
+    for (const button of buttons) {
+      button.disabled = true;
+    }
+    const chosen = answer === "show" ? buttons[0] : answer === "notnow" ? buttons[1] : undefined;
+    if (chosen) {
+      chosen.classList.add("chosen");
+    }
+  }
+
+  function addDayDivider(label) {
+    hideEmptyState();
+    const divider = document.createElement("div");
+    divider.className = "day-divider";
+    divider.textContent = `── ${label} ──`;
+    messagesEl.appendChild(divider);
     scrollToBottom();
   }
 
@@ -329,6 +443,7 @@
     toolEls.clear();
     approvalEls.clear();
     undoEls.clear();
+    nudgeEls.clear();
     emptyStateEl.hidden = false;
     setStatus("");
     setRunning(false);
@@ -397,12 +512,25 @@
     switch (message.type) {
       case "user":
         if (typeof message.text === "string") {
-          addUserBubble(message.text);
+          addUserBubble(message.text, message.time);
         }
         break;
       case "assistant":
         if (typeof message.id === "string" && typeof message.text === "string") {
-          upsertAssistant(message.id, message.text);
+          upsertAssistant(message.id, message.text, message.time);
+        }
+        break;
+      case "day":
+        if (typeof message.label === "string") {
+          addDayDivider(message.label);
+        }
+        break;
+      case "nudgeAnswered":
+        if (
+          typeof message.id === "string" &&
+          (message.answer === "show" || message.answer === "notnow")
+        ) {
+          disableNudge(message.id, message.answer);
         }
         break;
       case "thinking":

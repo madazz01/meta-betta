@@ -15,23 +15,41 @@ export function decideSession(savedId: string | undefined, resumeSucceeded: bool
 }
 
 export interface TranscriptEntry {
-  role: "user" | "assistant" | "undo";
+  role: "user" | "assistant" | "undo" | "nudge";
   text: string;
-  /** Undo button id (undo entries only). */
+  /** Undo button or nudge card id (undo/nudge entries only). */
   id?: string;
+  /** Message time in ms (user/assistant only); a resumed chat shows real times. */
+  at?: number;
+  /** Which nudge button was pressed (nudge entries only). */
+  answer?: "show" | "notnow";
 }
 
 const TRANSCRIPT_LIMIT = 20;
 const TEXT_LIMIT = 4000;
 
-/** The last messages and Undo buttons, bounded for storage. */
-export function buildTranscript(events: readonly { type: string; text?: string; id?: string }[]): TranscriptEntry[] {
+export interface TranscriptEventView {
+  type: string;
+  text?: string;
+  id?: string;
+  at?: number;
+  answer?: string;
+}
+
+/** The last messages, Undo buttons and nudge answers, bounded for storage. */
+export function buildTranscript(events: readonly TranscriptEventView[]): TranscriptEntry[] {
   const kept: TranscriptEntry[] = [];
   for (const event of events) {
     if ((event.type === "user" || event.type === "assistant") && event.text) {
-      kept.push({ role: event.type, text: event.text.slice(0, TEXT_LIMIT) });
+      kept.push({
+        role: event.type,
+        text: event.text.slice(0, TEXT_LIMIT),
+        ...(typeof event.at === "number" && Number.isFinite(event.at) ? { at: event.at } : {}),
+      });
     } else if (event.type === "undo" && event.id) {
       kept.push({ role: "undo", text: "", id: event.id });
+    } else if (event.type === "nudgeAnswered" && event.id && (event.answer === "show" || event.answer === "notnow")) {
+      kept.push({ role: "nudge", text: "", id: event.id, answer: event.answer });
     }
   }
   return kept.slice(-TRANSCRIPT_LIMIT);
@@ -45,11 +63,17 @@ export function cleanTranscript(value: unknown): TranscriptEntry[] {
   const kept: TranscriptEntry[] = [];
   for (const entry of value) {
     if (isTranscriptEntry(entry)) {
-      kept.push(
-        entry.role === "undo"
-          ? { role: "undo", text: "", id: entry.id }
-          : { role: entry.role, text: entry.text.slice(0, TEXT_LIMIT) },
-      );
+      if (entry.role === "undo") {
+        kept.push({ role: "undo", text: "", id: entry.id });
+      } else if (entry.role === "nudge") {
+        kept.push({ role: "nudge", text: "", id: entry.id, answer: entry.answer });
+      } else {
+        kept.push({
+          role: entry.role,
+          text: entry.text.slice(0, TEXT_LIMIT),
+          ...(typeof entry.at === "number" && Number.isFinite(entry.at) ? { at: entry.at } : {}),
+        });
+      }
     }
   }
   return kept.slice(-TRANSCRIPT_LIMIT);
@@ -59,11 +83,55 @@ function isTranscriptEntry(value: unknown): value is TranscriptEntry {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const entry = value as { role?: unknown; text?: unknown; id?: unknown };
+  const entry = value as { role?: unknown; text?: unknown; id?: unknown; answer?: unknown };
   if (entry.role === "undo") {
     return typeof entry.id === "string" && entry.id !== "";
   }
+  if (entry.role === "nudge") {
+    return (
+      typeof entry.id === "string" && entry.id !== "" && (entry.answer === "show" || entry.answer === "notnow")
+    );
+  }
   return (entry.role === "user" || entry.role === "assistant") && typeof entry.text === "string";
+}
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** The small time under a message ("9:41 AM"). */
+export function timeLabel(at: number): string {
+  const date = new Date(at);
+  const hours = date.getHours();
+  const twelve = hours % 12 === 0 ? 12 : hours % 12;
+  return `${twelve}:${String(date.getMinutes()).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
+}
+
+/** The day divider label ("Thu 29 Oct"). */
+export function dayLabel(at: number): string {
+  const date = new Date(at);
+  return `${DAY_NAMES[date.getDay()]} ${date.getDate()} ${MONTH_NAMES[date.getMonth()]}`;
+}
+
+/** True when two timestamps fall on the same calendar day. */
+export function sameDay(a: number, b: number): boolean {
+  const first = new Date(a);
+  const second = new Date(b);
+  return (
+    first.getFullYear() === second.getFullYear() &&
+    first.getMonth() === second.getMonth() &&
+    first.getDate() === second.getDate()
+  );
+}
+
+/**
+ * The divider label before a message, or undefined when it shares the
+ * previous message's day. The first message always labels its day.
+ */
+export function dividerBefore(prevAt: number | undefined, at: number): string | undefined {
+  if (prevAt === undefined || !sameDay(prevAt, at)) {
+    return dayLabel(at);
+  }
+  return undefined;
 }
 
 export interface StoredUndoFile {

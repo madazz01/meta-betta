@@ -76,26 +76,30 @@ export interface HistoryItemView {
   text?: string;
   displayText?: string;
   summary?: readonly string[];
+  /** RFC3339 stamp of the item's durable record, when the server kept one. */
+  recordedAt?: string;
 }
 
 export type HistoryEvent =
-  | { type: "user"; text: string }
-  | { type: "assistant"; id: string; text: string }
+  | { type: "user"; text: string; at?: number }
+  | { type: "assistant"; id: string; text: string; at?: number }
   | { type: "thinking"; id: string; text: string };
 
 /**
  * One transcript event for a resumed history item: user and agent messages
  * plus collapsed thinking. Anything else (tools, internals) is skipped.
+ * Messages carry their recorded time, so a resumed chat shows real times.
  */
 export function historyEvent(item: HistoryItemView): HistoryEvent | undefined {
+  const at = recordedMs(item.recordedAt);
   switch (item.kind) {
     case "userMessage": {
       const text = item.text ?? item.displayText ?? "";
-      return text ? { type: "user", text } : undefined;
+      return text ? { type: "user", text, ...(at === undefined ? {} : { at }) } : undefined;
     }
     case "agentMessage": {
       const text = item.text ?? "";
-      return text ? { type: "assistant", id: item.itemId, text } : undefined;
+      return text ? { type: "assistant", id: item.itemId, text, ...(at === undefined ? {} : { at }) } : undefined;
     }
     case "reasoning": {
       const text = reasoningText(item.summary, item.text);
@@ -104,6 +108,15 @@ export function historyEvent(item: HistoryItemView): HistoryEvent | undefined {
     default:
       return undefined;
   }
+}
+
+/** A recorded stamp in ms, or undefined when missing or unreadable. */
+function recordedMs(recordedAt: string | undefined): number | undefined {
+  if (!recordedAt) {
+    return undefined;
+  }
+  const ms = Date.parse(recordedAt);
+  return Number.isFinite(ms) ? ms : undefined;
 }
 
 function toolLabel(item: ToolItemView, past: boolean): string {

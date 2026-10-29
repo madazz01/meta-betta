@@ -155,6 +155,41 @@ function toolTexts(events: MuseHostEvent[]): string[] {
   return events.filter((event) => event.type === "tool").map((event) => event.text);
 }
 
+describe("history times", () => {
+  it("replays the recorded time with resumed messages", async () => {
+    const fake = fakeStoredSession({
+      savedId: "saved-1",
+      history: [
+        {
+          kind: "userMessage",
+          itemId: "u1",
+          revision: 1,
+          status: "completed",
+          text: "first question",
+          recordedAt: "2026-10-28T09:41:00.000Z",
+        },
+        {
+          kind: "agentMessage",
+          itemId: "a1",
+          revision: 2,
+          status: "completed",
+          text: "first answer",
+          recordedAt: "2026-10-28T09:42:00.000Z",
+        },
+      ],
+    });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(
+      fake.events.filter((event) => event.type === "user" || event.type === "assistant"),
+      [
+        { type: "user", text: "first question", at: Date.parse("2026-10-28T09:41:00.000Z") },
+        { type: "assistant", id: "a1", text: "first answer", at: Date.parse("2026-10-28T09:42:00.000Z") },
+      ],
+    );
+    await fake.host.dispose();
+  });
+});
+
 type CompletedParams = Extract<TurnOutcome, { kind: "completed" }>["params"];
 
 function terminalOutcome(terminal: string): TurnOutcome {

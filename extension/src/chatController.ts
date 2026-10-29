@@ -2,12 +2,14 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { parseSendMessage } from "./lib/chat.js";
+import { parseNudgeAnswer, parseSendMessage } from "./lib/chat.js";
 import { parseFileLink } from "./lib/links.js";
 import {
   buildTranscript,
   cleanTranscript,
   cleanUndos,
+  dividerBefore,
+  timeLabel,
   UndoReplayer,
   type StoredUndo,
 } from "./lib/session.js";
@@ -38,6 +40,7 @@ import {
   UnsafeBackupError,
   welcomeName,
   withNameLine,
+  withNotInterested,
   withStartHere,
   type SaveSection,
   type SaveSections,
@@ -65,8 +68,8 @@ export interface SavedSection {
 }
 
 type TranscriptEvent =
-  | { type: "user"; text: string }
-  | { type: "assistant"; id: string; text: string }
+  | { type: "user"; text: string; at?: number; time?: string }
+  | { type: "assistant"; id: string; text: string; at?: number; time?: string }
   | { type: "thinking"; id: string; text: string }
   | { type: "tool"; id: string; text: string; done: boolean }
   | ApprovalCardEvent
@@ -75,7 +78,9 @@ type TranscriptEvent =
   | { type: "saved"; text: string; backup?: string; sections: SavedSection[] }
   | { type: "undo"; id: string; label: string }
   | { type: "undoDone"; id: string; state: "undone" | "ready" | "gone" }
-  | { type: "memory"; text: string; detail: string };
+  | { type: "memory"; text: string; detail: string }
+  | { type: "day"; label: string }
+  | { type: "nudgeAnswered"; id: string; answer: "show" | "notnow" };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
@@ -344,6 +349,30 @@ export class ChatController {
     this.welcomeStep = undefined;
     this.broadcast({ type: "welcomeSkip", show: false });
     this.recordAndBroadcast({ type: "notice", kind: "info", text: "Skipped for now — what's first?" });
+  }
+
+  /**
+   * A nudge card button: record the answer once, file a decline in me.md,
+   * then send the answer back as the user's reply.
+   */
+  public async answerNudge(id: string, answer: "show" | "notnow", thing: string): Promise<void> {
+    if (this.history.some((entry) => entry.type === "nudgeAnswered" && entry.id === id)) {
+      return;
+    }
+    this.recordAndBroadcast({ type: "nudgeAnswered", id, answer });
+    if (answer === "notnow" && thing.trim() !== "") {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (folder) {
+        try {
+          const target = path.join(folder.uri.fsPath, "brain", "me.md");
+          const content = await nodeBrainFs.readFile(target).catch(() => "");
+          await nodeBrainFs.writeFile(target, withNotInterested(content, thing));
+        } catch {
+          // The card still answers; me.md stays editable.
+        }
+      }
+    }
+    await this.send(answer === "show" ? "Show me" : "Not now");
   }
 
   private async fileWelcomeName(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
@@ -1097,11 +1126,13 @@ export class ChatController {
                 this.emitReplayedUndo(entry.id);
                 replayed.add(entry.id);
                 this.log(`${entry.id}: replayed from stored transcript`);
+              } else if (entry.role === "nudge" && entry.id && entry.answer) {
+                this.recordAndBroadcast({ type: "nudgeAnswered", id: entry.id, answer: entry.answer });
               } else {
                 this.recordAndBroadcast(
                   entry.role === "user"
-                    ? { type: "user", text: entry.text }
-                    : { type: "assistant", id: `stored-${index}`, text: entry.text },
+                    ? { type: "user", text: entry.text, at: entry.at }
+                    : { type: "assistant", id: `stored-${index}`, text: entry.text, at: entry.at },
                 );
               }
             });
@@ -1387,28 +1418,58 @@ export class ChatController {
   }
 
   private recordAndBroadcast(event: TranscriptEvent): void {
+    // Messages carry their time; resumed ones keep their recorded stamp.
+    const stamped = stampTime(event);
     // Streaming updates replace their earlier self, so history stays compact
     // and a replay shows each bubble once, in its final state.
     const upsertId =
-      event.type === "assistant" || event.type === "thinking" || event.type === "tool" ? event.id : undefined;
+      stamped.type === "assistant" || stamped.type === "thinking" || stamped.type === "tool"
+        ? stamped.id
+        : undefined;
     if (upsertId !== undefined) {
       const index = this.history.findIndex(
-        (entry) => entry.type === event.type && (entry as { id?: string }).id === upsertId,
+        (entry) => entry.type === stamped.type && (entry as { id?: string }).id === upsertId,
       );
       if (index >= 0) {
-        this.history[index] = event;
-        this.broadcast(event);
+        // A stream chunk never moves the message's time.
+        this.history[index] = keepTime(this.history[index], stamped);
+        this.broadcast(this.history[index]);
         return;
       }
     }
+    const divider = this.dividerFor(stamped);
+    if (divider !== undefined) {
+      this.pushHistory({ type: "day", label: divider });
+      this.broadcast({ type: "day", label: divider });
+    }
+    this.pushHistory(stamped);
+    this.broadcast(stamped);
+    if (stamped.type === "user") {
+      this.persistTranscript();
+    }
+  }
+
+  private pushHistory(event: TranscriptEvent): void {
     this.history.push(event);
     if (this.history.length > HISTORY_LIMIT) {
       this.history.splice(0, this.history.length - HISTORY_LIMIT);
     }
-    this.broadcast(event);
-    if (event.type === "user") {
-      this.persistTranscript();
+  }
+
+  /** The day divider before a message, from the last stamped message. */
+  private dividerFor(event: TranscriptEvent): string | undefined {
+    if ((event.type !== "user" && event.type !== "assistant") || event.at === undefined) {
+      return undefined;
     }
+    let prevAt: number | undefined;
+    for (let index = this.history.length - 1; index >= 0; index -= 1) {
+      const entry = this.history[index];
+      if ((entry?.type === "user" || entry?.type === "assistant") && entry.at !== undefined) {
+        prevAt = entry.at;
+        break;
+      }
+    }
+    return dividerBefore(prevAt, event.at);
   }
 
   private broadcast(message: unknown): void {
@@ -1463,6 +1524,13 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     void controller.openLink(message.url);
     return;
   }
+  if (message.type === "nudgeAnswer") {
+    const parsed = parseNudgeAnswer(message);
+    if (parsed) {
+      void controller.answerNudge(parsed.id, parsed.answer, parsed.thing);
+    }
+    return;
+  }
   const text = parseSendMessage(message);
   if (text !== undefined) {
     void controller.send(text);
@@ -1471,6 +1539,27 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** Stamp a message with its time, keeping a recorded stamp when it has one. */
+function stampTime(event: TranscriptEvent): TranscriptEvent {
+  if (event.type !== "user" && event.type !== "assistant") {
+    return event;
+  }
+  const at = event.at ?? Date.now();
+  return { ...event, at, time: timeLabel(at) };
+}
+
+/** A streaming update keeps the message's original time. */
+function keepTime(previous: TranscriptEvent | undefined, next: TranscriptEvent): TranscriptEvent {
+  if (
+    (previous?.type === "user" || previous?.type === "assistant") &&
+    previous.at !== undefined &&
+    (next.type === "user" || next.type === "assistant")
+  ) {
+    return { ...next, at: previous.at, time: previous.time ?? timeLabel(previous.at) };
+  }
+  return next;
 }
 
 /** "1 file" or "3 files". */

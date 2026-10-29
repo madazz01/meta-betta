@@ -4,7 +4,11 @@ import {
   buildTranscript,
   cleanTranscript,
   cleanUndos,
+  dayLabel,
   decideSession,
+  dividerBefore,
+  sameDay,
+  timeLabel,
   UndoReplayer,
 } from "../lib/session.js";
 
@@ -89,6 +93,70 @@ describe("undo transcript round trip", () => {
         { role: "undo", text: "", id: "undo-1" },
       ],
     );
+  });
+});
+
+describe("message times", () => {
+  it("words the time like 9:41 AM", () => {
+    assert.equal(timeLabel(new Date(2026, 9, 29, 9, 41).getTime()), "9:41 AM");
+    assert.equal(timeLabel(new Date(2026, 9, 29, 14, 5).getTime()), "2:05 PM");
+    assert.equal(timeLabel(new Date(2026, 9, 29, 0, 0).getTime()), "12:00 AM");
+    assert.equal(timeLabel(new Date(2026, 9, 29, 12, 0).getTime()), "12:00 PM");
+  });
+
+  it("words the day like Thu 29 Oct", () => {
+    assert.equal(dayLabel(new Date(2026, 9, 29, 9, 41).getTime()), "Thu 29 Oct");
+  });
+
+  it("divides days, not hours", () => {
+    assert.equal(sameDay(new Date(2026, 9, 29, 9, 0).getTime(), new Date(2026, 9, 29, 23, 59).getTime()), true);
+    assert.equal(sameDay(new Date(2026, 9, 29, 23, 59).getTime(), new Date(2026, 9, 30, 0, 1).getTime()), false);
+  });
+
+  it("labels the first message and every new day", () => {
+    const thu = new Date(2026, 9, 29, 9, 41).getTime();
+    const thuLate = new Date(2026, 9, 29, 22, 10).getTime();
+    const fri = new Date(2026, 9, 30, 8, 0).getTime();
+    const week = new Date(2026, 10, 5, 8, 0).getTime();
+    assert.equal(dividerBefore(undefined, thu), "Thu 29 Oct");
+    assert.equal(dividerBefore(thu, thuLate), undefined);
+    assert.equal(dividerBefore(thuLate, fri), "Fri 30 Oct");
+    assert.equal(dividerBefore(fri, week), "Thu 5 Nov");
+  });
+});
+
+describe("transcript times", () => {
+  it("stores message times with the history", () => {
+    assert.deepEqual(
+      buildTranscript([
+        { type: "user", text: "hi", at: 1000 },
+        { type: "assistant", text: "hello", id: "a1", at: 2000 },
+      ]),
+      [
+        { role: "user", text: "hi", at: 1000 },
+        { role: "assistant", text: "hello", at: 2000 },
+      ],
+    );
+    assert.deepEqual(cleanTranscript([{ role: "user", text: "hi", at: 1000 }]), [
+      { role: "user", text: "hi", at: 1000 },
+    ]);
+  });
+
+  it("keeps the message when its time is junk", () => {
+    assert.deepEqual(cleanTranscript([{ role: "user", text: "hi", at: "soon" }]), [
+      { role: "user", text: "hi" },
+    ]);
+  });
+
+  it("keeps nudge answers by id, drops answer-less ones", () => {
+    assert.deepEqual(buildTranscript([{ type: "nudgeAnswered", id: "a1", answer: "notnow" }]), [
+      { role: "nudge", text: "", id: "a1", answer: "notnow" },
+    ]);
+    assert.deepEqual(cleanTranscript([{ role: "nudge", text: "", id: "a1", answer: "show" }]), [
+      { role: "nudge", text: "", id: "a1", answer: "show" },
+    ]);
+    assert.deepEqual(cleanTranscript([{ role: "nudge", text: "", id: "a1" }]), []);
+    assert.deepEqual(cleanTranscript([{ role: "nudge", text: "", id: "a1", answer: "maybe" }]), []);
   });
 });
 

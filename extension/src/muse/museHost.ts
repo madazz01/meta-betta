@@ -35,8 +35,8 @@ export interface ApprovalCardEvent {
 }
 
 export type MuseHostEvent =
-  | { type: "user"; text: string }
-  | { type: "assistant"; id: string; text: string }
+  | { type: "user"; text: string; at?: number }
+  | { type: "assistant"; id: string; text: string; at?: number }
   | { type: "thinking"; id: string; text: string }
   | { type: "tool"; id: string; text: string; done: boolean }
   | { type: "status"; text: string }
@@ -401,6 +401,7 @@ export class MuseHost {
         text: item.text,
         displayText: item.displayText,
         summary: item.summary,
+        recordedAt: item.recordedAt,
       });
       if (!event) {
         continue;
@@ -418,7 +419,7 @@ export class MuseHost {
         if (skippingSave) {
           continue;
         }
-        this.emit({ type: "user", text });
+        this.emit({ type: "user", text, ...(event.at === undefined ? {} : { at: event.at }) });
       } else {
         if (skippingSave && event.type === "assistant") {
           continue;
