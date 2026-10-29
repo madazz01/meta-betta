@@ -10,6 +10,8 @@ let brainProvider: BrainViewProvider | undefined;
 let brainSideProvider: BrainViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  const output = vscode.window.createOutputChannel("Meta Betta");
+  context.subscriptions.push(output);
   controller = new ChatController(
     context.extensionUri,
     context.workspaceState,
@@ -24,6 +26,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     },
     context.storageUri?.fsPath,
+    (message) => output.appendLine(`[${new Date().toLocaleTimeString("en-GB")}] ${message}`),
   );
   viewProvider = new ChatViewProvider(context.extensionUri, controller, () => {
     if (controller) {

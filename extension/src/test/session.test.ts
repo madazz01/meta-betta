@@ -118,6 +118,11 @@ describe("cleanUndos", () => {
     assert.equal(kept.length, 100);
     assert.equal(kept[0]?.id, "undo-20");
   });
+
+  it("keeps a session tag, drops a junk one", () => {
+    assert.deepEqual(cleanUndos([{ ...valid, session: "s1" }]), [{ ...valid, session: "s1" }]);
+    assert.deepEqual(cleanUndos([{ ...valid, session: 42 }]), [valid]);
+  });
 });
 
 describe("UndoReplayer", () => {
@@ -158,5 +163,34 @@ describe("UndoReplayer", () => {
     assert.deepEqual(replay.assistantArrived(), ["undo-1"]);
     assert.deepEqual(replay.assistantArrived(), []);
     assert.deepEqual(replay.finish(), []);
+  });
+
+  it("reports who matched and how many users replayed", () => {
+    const replay = new UndoReplayer(undos);
+    replay.userArrived();
+    replay.assistantArrived();
+    replay.userArrived();
+    replay.assistantArrived();
+    replay.userArrived();
+    replay.assistantArrived();
+    replay.finish();
+    assert.deepEqual(replay.firedIds(), ["undo-1", "undo-2"]);
+    assert.equal(replay.userCount(), 3);
+  });
+
+  it("only arms undos from the resumed session", () => {
+    const replay = new UndoReplayer(
+      [
+        { id: "undo-old", anchor: 1, session: "aaa" },
+        { id: "undo-new", anchor: 1, session: "bbb" },
+        { id: "undo-legacy", anchor: 2 },
+      ],
+      "bbb",
+    );
+    assert.deepEqual(replay.userArrived(), []);
+    assert.deepEqual(replay.assistantArrived(), ["undo-new"]);
+    assert.deepEqual(replay.userArrived(), []);
+    assert.deepEqual(replay.assistantArrived(), ["undo-legacy"]);
+    assert.deepEqual(replay.firedIds(), ["undo-new", "undo-legacy"]);
   });
 });

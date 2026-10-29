@@ -80,6 +80,8 @@ export interface StoredUndo {
   /** How many user messages into the chat this reply was (resume anchor). */
   anchor: number;
   undone: boolean;
+  /** Muse session id; anchors only match replays of the same session. */
+  session?: string;
 }
 
 /** Stored undo targets are capped: older snapshots are pruned away anyway. */
@@ -112,6 +114,7 @@ function cleanUndo(value: unknown): StoredUndo | undefined {
     files?: unknown;
     anchor?: unknown;
     undone?: unknown;
+    session?: unknown;
   };
   if (
     typeof entry.id !== "string" ||
@@ -152,6 +155,7 @@ function cleanUndo(value: unknown): StoredUndo | undefined {
     files,
     anchor: entry.anchor as number,
     undone: entry.undone,
+    ...(typeof entry.session === "string" ? { session: entry.session } : {}),
   };
 }
 
@@ -163,16 +167,24 @@ function cleanUndo(value: unknown): StoredUndo | undefined {
 export class UndoReplayer {
   private users = 0;
   private pending: string[] = [];
+  private firedSet = new Set<string>();
 
-  public constructor(private readonly undos: readonly { id: string; anchor: number }[]) {}
+  /**
+   * @param undos Stored undo targets.
+   * @param sessionId The resumed Muse session: only its undos arm (plus
+   * legacy ones stored without a session).
+   */
+  public constructor(
+    private readonly undos: readonly { id: string; anchor: number; session?: string }[],
+    private readonly sessionId?: string,
+  ) {}
 
   /** Undo ids to emit BEFORE recording this replayed user message. */
   public userArrived(): string[] {
-    const flush = this.pending;
-    this.pending = [];
+    const flush = this.takePending();
     this.users += 1;
     for (const undo of this.undos) {
-      if (undo.anchor === this.users) {
+      if (undo.anchor === this.users && (undo.session === undefined || undo.session === this.sessionId)) {
         this.pending.push(undo.id);
       }
     }
@@ -181,15 +193,30 @@ export class UndoReplayer {
 
   /** Undo ids to emit AFTER recording this replayed assistant message. */
   public assistantArrived(): string[] {
-    const flush = this.pending;
-    this.pending = [];
-    return flush;
+    return this.takePending();
   }
 
   /** Leftovers (anchors past the history end) go at the bottom. */
   public finish(): string[] {
+    return this.takePending();
+  }
+
+  /** How many user messages replayed so far. */
+  public userCount(): number {
+    return this.users;
+  }
+
+  /** Undo ids whose anchor matched a replayed reply. */
+  public firedIds(): readonly string[] {
+    return [...this.firedSet];
+  }
+
+  private takePending(): string[] {
     const flush = this.pending;
     this.pending = [];
+    for (const id of flush) {
+      this.firedSet.add(id);
+    }
     return flush;
   }
 }

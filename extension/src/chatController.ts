@@ -73,8 +73,8 @@ const TRANSCRIPT_KEY = "metaBetta.transcript";
 const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
 const LIVE_LABELS_KEY = "metaBetta.liveLabels";
 const UNDOS_KEY = "metaBetta.undos";
-/** Heartbeat + quick-save check, twice a minute. */
-const TICK_MS = 30_000;
+/** Heartbeat + quick-save check, every 10 seconds. */
+const TICK_MS = 10_000;
 /** A quick save also fires after this many turns, whatever the clock says. */
 const QUICK_SAVE_TURNS = 15;
 
@@ -124,8 +124,10 @@ export class ChatController {
   private undos = new Map<string, StoredUndo>();
   private undoCounter = 0;
   private anchorHigh = 0;
+  private museSessionId: string | undefined;
   private replaying = false;
   private replayer: UndoReplayer | undefined;
+  private headerUndoSeq = 0;
   private gitNoticeShown = false;
   private gitBinCache: string | undefined;
   private shadowCache: { folder: string; bin: string; shadow: ShadowSnapshots } | undefined;
@@ -140,6 +142,7 @@ export class ChatController {
     private readonly storage: vscode.Memento,
     private readonly onBrainChanged: (files: string[]) => void = () => undefined,
     private readonly storageDir: string | undefined = undefined,
+    private readonly logFn: (message: string) => void = () => undefined,
   ) {
     this.heartbeat();
     this.tickTimer = setInterval(() => {
@@ -158,6 +161,7 @@ export class ChatController {
     sink.post({ type: "turn", state: this.running ? "started" : "done" });
     sink.post({ type: "status", text: this.lastStatus });
     sink.post({ type: "sessionLabel", label: this.sessionLabel() });
+    void this.updateHeaderUndo();
     if (!vscode.workspace.workspaceFolders?.[0]) {
       sink.post({ type: "noFolder" });
     }
@@ -245,8 +249,6 @@ export class ChatController {
         this.broadcastSessionLabel();
       }
     }
-    this.recordAndBroadcast({ type: "user", text });
-    this.storeSet(LAST_MESSAGE_KEY, Date.now());
     let host: MuseHost;
     try {
       host = await this.ensureHost(folder);
@@ -258,6 +260,11 @@ export class ChatController {
       });
       return;
     }
+    // Recorded only once the turn will actually run: a failed send never
+    // reaches the server, and a ghost user message would skew the undo
+    // anchors on resume.
+    this.recordAndBroadcast({ type: "user", text });
+    this.storeSet(LAST_MESSAGE_KEY, Date.now());
     this.pendingBefore = await this.takeBeforeSnapshot(folder);
     await host.send(await this.withBackground(folder, text), folder.uri.fsPath);
   }
@@ -540,6 +547,11 @@ export class ChatController {
     this.broadcast({ type: "status", text });
   }
 
+  /** One line to the Meta Betta output channel (startup/resume diagnosis). */
+  private log(message: string): void {
+    this.logFn(message);
+  }
+
   /** Put back the files one reply changed, after a confirm listing them. */
   public async undo(id: string): Promise<void> {
     const target = this.undos.get(id);
@@ -566,6 +578,7 @@ export class ChatController {
       if (!beforeKept || !afterKept) {
         this.recordAndBroadcast({ type: "notice", kind: "info", text: "That change is too old to undo." });
         this.recordAndBroadcast({ type: "undoDone", id, state: "gone" });
+        void this.updateHeaderUndo();
         return;
       }
       changed = await shadow.changedSince(target.files, target.after);
@@ -606,10 +619,60 @@ export class ChatController {
         this.recordAndBroadcast({ type: "notice", kind: "error", text: `Couldn't put back: ${failed.join(", ")}.` });
       }
       this.recordAndBroadcast({ type: "undoDone", id, state: "undone" });
+      void this.updateHeaderUndo();
     } catch (error) {
       this.snapshotFailed(error, "Couldn't undo that.");
       this.recordAndBroadcast({ type: "undoDone", id, state: "ready" });
     }
+  }
+
+  /** Undo the newest change that isn't undone yet (header button). */
+  public async undoLast(): Promise<void> {
+    const target = this.newestOpenUndo();
+    if (!target) {
+      return;
+    }
+    await this.undo(target.id);
+  }
+
+  /** Newest stored undo that hasn't been undone, if any. */
+  private newestOpenUndo(): StoredUndo | undefined {
+    const open = [...this.undos.values()].filter((undo) => !undo.undone);
+    return open[open.length - 1];
+  }
+
+  /** Push the header Undo button state (greyed when nothing is undoable). */
+  private async updateHeaderUndo(): Promise<void> {
+    this.headerUndoSeq += 1;
+    const seq = this.headerUndoSeq;
+    const target = this.newestOpenUndo();
+    let enabled = false;
+    let tip = "Nothing to undo";
+    if (target) {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      let shadow: ShadowSnapshots | undefined;
+      try {
+        shadow = folder ? await this.shadowFor(folder) : undefined;
+      } catch {
+        shadow = undefined;
+      }
+      if (shadow) {
+        try {
+          // Pruning deletes oldest first, so one check decides: if the
+          // newest open undo is gone, everything older is gone too.
+          if ((await shadow.has(target.before)) && (await shadow.has(target.after))) {
+            enabled = true;
+            tip = `Undo: ${headerUndoTip(target)}`;
+          }
+        } catch {
+          // Leave greyed.
+        }
+      }
+    }
+    if (seq !== this.headerUndoSeq) {
+      return;
+    }
+    this.broadcast({ type: "headerUndo", enabled, tip });
   }
 
   /** Re-emit one stored Undo button (reload/resume), then check its state. */
@@ -629,6 +692,7 @@ export class ChatController {
     }
     if (target.undone) {
       this.recordAndBroadcast({ type: "undoDone", id, state: "undone" });
+      this.log(`${id}: already undone`);
       return;
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -645,6 +709,7 @@ export class ChatController {
       const kept = (await shadow.has(target.before)) && (await shadow.has(target.after));
       if (!kept) {
         this.recordAndBroadcast({ type: "undoDone", id, state: "gone" });
+        this.log(`${id}: snapshots pruned`);
       }
     } catch {
       // Leave the button; clicking reports properly.
@@ -733,9 +798,14 @@ export class ChatController {
         files,
         anchor,
         undone: false,
+        session: this.museSessionId ?? "",
       });
       this.persistUndos();
       this.recordAndBroadcast({ type: "undo", id, label: `↩ Undo that (${countFiles(files.length)})` });
+      // The turn-done persist ran before this button existed; without this,
+      // closing now would replay the reply with no Undo button.
+      this.persistTranscript();
+      void this.updateHeaderUndo();
     } catch (error) {
       this.snapshotFailed(error);
     }
@@ -799,9 +869,10 @@ export class ChatController {
     this.history = [];
     this.storeSet(TRANSCRIPT_KEY, undefined);
     this.storeSet(LAST_MESSAGE_KEY, undefined);
-    // Fresh session: old anchors point at replies that no longer exist.
-    this.undos.clear();
-    this.storeSet(UNDOS_KEY, undefined);
+    // Undo history stays: it's about files, not the conversation. Anchors
+    // restart for the new session (old ones can't match it: they're tagged
+    // with the old session id).
+    this.anchorHigh = 0;
     this.forceCatchUp = true;
     this.running = false;
     this.lastStatus = "";
@@ -842,7 +913,12 @@ export class ChatController {
     clearInterval(this.tickTimer);
     const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
     delete live[this.sessionId];
-    this.storeSet(LIVE_LABELS_KEY, live);
+    try {
+      // Awaited: a restart boots within seconds, and must not see us as live.
+      await this.storage.update(LIVE_LABELS_KEY, live);
+    } catch {
+      // Shutting down anyway; the entry expires on its own in 20 seconds.
+    }
     const host = this.host;
     this.host = undefined;
     if (host) {
@@ -863,6 +939,7 @@ export class ChatController {
   private async doPrepare(): Promise<void> {
     try {
       const loaded = cleanUndos(this.storage.get<unknown>(UNDOS_KEY));
+      this.log(`Undos loaded: ${loaded.length}`);
       this.undos = new Map(loaded.map((undo) => [undo.id, undo]));
       // New ids and anchors must not collide with reloaded ones.
       for (const undo of loaded) {
@@ -875,11 +952,14 @@ export class ChatController {
       const folder = vscode.workspace.workspaceFolders?.[0];
       const savedId = this.storage.get<string>(SESSION_ID_KEY);
       if (!folder || !savedId?.trim()) {
+        this.log(`Resume: none (${!folder ? "no folder open" : "no saved session"})`);
+        void this.updateHeaderUndo();
         return;
       }
       const host = await this.ensureHost(folder);
       this.replaying = true;
-      this.replayer = new UndoReplayer([...this.undos.values()]);
+      const resumeId = this.storage.get<string>(SESSION_ID_KEY)?.trim() || undefined;
+      this.replayer = new UndoReplayer([...this.undos.values()], resumeId);
       try {
         let shown = 0;
         try {
@@ -890,9 +970,13 @@ export class ChatController {
         }
         if (shown === 0) {
           const stored = cleanTranscript(this.storage.get<unknown>(TRANSCRIPT_KEY));
+          this.log(`Resume: stored transcript (${stored.length} entries)`);
+          const replayed = new Set<string>();
           stored.forEach((entry, index) => {
             if (entry.role === "undo" && entry.id) {
               this.emitReplayedUndo(entry.id);
+              replayed.add(entry.id);
+              this.log(`${entry.id}: replayed from stored transcript`);
             } else {
               this.recordAndBroadcast(
                 entry.role === "user"
@@ -901,15 +985,31 @@ export class ChatController {
               );
             }
           });
+          for (const undo of loaded) {
+            if (!replayed.has(undo.id)) {
+              this.log(`${undo.id}: not in stored transcript`);
+            }
+          }
         } else {
           for (const id of this.replayer.finish()) {
             this.emitReplayedUndo(id);
+          }
+          const users = this.replayer.userCount();
+          this.log(`Resume: server history (${users} user messages)`);
+          const fired = new Set(this.replayer.firedIds());
+          for (const undo of loaded) {
+            if (fired.has(undo.id)) {
+              this.log(`${undo.id}: anchor ${undo.anchor} matched`);
+            } else {
+              this.log(`${undo.id}: anchor ${undo.anchor} had no reply (${users} users replayed)`);
+            }
           }
         }
       } finally {
         this.replaying = false;
         this.replayer = undefined;
       }
+      void this.updateHeaderUndo();
     } finally {
       this.prepared = true;
     }
@@ -1027,13 +1127,16 @@ export class ChatController {
       askApproval: (card) => this.askApproval(card),
       sessionStore: {
         loadId: () => this.storage.get<string>(SESSION_ID_KEY),
-        saveId: (id) => this.storeSet(SESSION_ID_KEY, id),
+        saveId: (id) => {
+          this.museSessionId = id;
+          this.storeSet(SESSION_ID_KEY, id);
+        },
         clear: () => {
           this.storeSet(SESSION_ID_KEY, undefined);
           this.storeSet(TRANSCRIPT_KEY, undefined);
           this.storeSet(LAST_MESSAGE_KEY, undefined);
-          this.undos.clear();
-          this.storeSet(UNDOS_KEY, undefined);
+          // Undo history stays: the snapshots are still valid.
+          this.anchorHigh = 0;
         },
       },
     });
@@ -1204,6 +1307,10 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     void controller.undo(message.id);
     return;
   }
+  if (message.type === "undoLast") {
+    void controller.undoLast();
+    return;
+  }
   if (message.type === "newChat") {
     void controller.newChat();
     return;
@@ -1237,6 +1344,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** "1 file" or "3 files". */
 function countFiles(count: number): string {
   return count === 1 ? "1 file" : `${count} files`;
+}
+
+/** "notes.txt (4:12pm)" or "3 files (4:12pm)" for the header Undo tooltip. */
+function headerUndoTip(target: StoredUndo): string {
+  const time = formatSaveTime(new Date(target.at));
+  if (target.files.length === 1) {
+    return `${target.files[0]?.path ?? "file"} (${time})`;
+  }
+  return `${countFiles(target.files.length)} (${time})`;
 }
 
 /**

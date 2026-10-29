@@ -678,8 +678,8 @@ export async function backupBrain(
  */
 export type LiveLabels = Record<string, number>;
 
-/** A heartbeat counts as live for two minutes (written every minute). */
-export const LIVE_LABEL_TTL_MS = 120_000;
+/** A heartbeat counts as live for 20 seconds (written every 10). */
+export const LIVE_LABEL_TTL_MS = 20_000;
 
 /** Validate stored live labels; anything else is forgotten. */
 export function cleanLiveLabels(value: unknown): LiveLabels {

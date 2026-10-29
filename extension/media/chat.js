@@ -11,6 +11,7 @@
   const sendButton = document.getElementById("send");
   const newChatButton = document.getElementById("new-chat");
   const saveDayButton = document.getElementById("save-day");
+  const undoLastButton = document.getElementById("undo-last");
   const sessionLabelButton = document.getElementById("session-label");
   const noFolderEl = document.getElementById("no-folder");
   const openFolderButton = document.getElementById("open-folder");
@@ -305,6 +306,10 @@
     vscode.postMessage({ type: "saveMyDay" });
   });
 
+  undoLastButton.addEventListener("click", () => {
+    vscode.postMessage({ type: "undoLast" });
+  });
+
   sessionLabelButton.addEventListener("click", () => {
     vscode.postMessage({ type: "renameSession" });
   });
@@ -403,6 +408,14 @@
       case "undoDone":
         if (typeof message.id === "string" && (message.state === "undone" || message.state === "ready" || message.state === "gone")) {
           setUndoDone(message.id, message.state);
+        }
+        break;
+      case "headerUndo":
+        if (typeof message.enabled === "boolean") {
+          undoLastButton.disabled = !message.enabled;
+          if (typeof message.tip === "string") {
+            undoLastButton.title = message.tip;
+          }
         }
         break;
       case "turn":
