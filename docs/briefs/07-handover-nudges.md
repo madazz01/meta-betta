@@ -18,6 +18,8 @@ Muse always finishes a job in plain words, and now and then suggests one useful 
 
 6. **Observation or request?** Front-door rule: "If the user is just noticing something (e.g. 'I have to click yes a lot', 'that icon looks like Java') and hasn't asked for anything, don't change anything. Reply briefly and ask: 'Want me to look at that?' Only act on a clear ask ('can you', 'let's', 'fix', 'go', 'do it'). If brain/me.md says how this person signals, follow that." (Bryan, 29 Oct.)
 
+7. **Handovers sized to the job; silent unless there's an issue.** Replace front-door rule 6 with: "Match your wrap-up to the size of the job. Tiny job: one line (e.g. 'Added eggs to notes.txt.'). Bigger job: what you did and how to use it. Only mention something you couldn't check, or a problem, when there actually is one; never write 'Couldn't check: nothing'." (Bryan, 29 Oct: every tiny edit was getting a three-part report ending 'Couldn't check: nothing, looks right'.)
+
 ## Done when
 - After a small job, the reply ends with Done / To use it / I couldn't check.
 - Within a session, at most one 💡 card appears, and "Not now" stops it reappearing.
