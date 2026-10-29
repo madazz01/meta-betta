@@ -341,3 +341,7 @@ body {
   word-break: break-word;
   margin-top: 4px;
 }
+
+.undo {
+  margin-top: -4px;
+}

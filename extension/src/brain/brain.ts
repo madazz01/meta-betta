@@ -105,6 +105,7 @@ export const FRONT_DOOR_SECTION = `<!-- meta-betta:start -->
 6. Finish every job with: what you did (plain words), how to use it (click by click), anything you couldn't check.
 7. Never edit files outside this workspace.
 8. Never rewrite or delete anything in brain/. The brain only grows; the extension adds new entries for you when we save.
+9. Before changing an existing file, copy it to .backups/<date>/<same path> first, and say where the copy is in one line.
 <!-- meta-betta:end -->`;
 
 /**
@@ -128,6 +129,34 @@ export async function ensureFrontDoor(root: string, fs: BrainFs = nodeBrainFs): 
   }
   const after = end + FRONT_DOOR_END.length;
   await fs.writeFile(target, `${content.slice(0, start)}${FRONT_DOOR_SECTION}${content.slice(after)}`);
+}
+
+/**
+ * Make sure the workspace .gitignore lists an entry (e.g. ".backups/"):
+ * create the file when missing, append the entry when absent. Never replaces
+ * anything. Returns true when it added the entry.
+ */
+export async function ensureGitignoreEntry(
+  root: string,
+  entry: string,
+  fs: BrainFs = nodeBrainFs,
+): Promise<boolean> {
+  const target = join(root, ".gitignore");
+  if (!(await fs.exists(target))) {
+    await fs.writeFile(target, `${entry}\n`);
+    return true;
+  }
+  const content = await fs.readFile(target);
+  const bare = entry.replace(/\/$/, "");
+  const listed = content
+    .split("\n")
+    .map((line) => line.trim())
+    .some((line) => line === entry || line === bare);
+  if (listed) {
+    return false;
+  }
+  await fs.writeFile(target, `${content.replace(/\n*$/, "")}\n${entry}\n`);
+  return true;
 }
 
 /** `### 2026-10-28 09:41 · Session 7f3a · login page` (local time). */

@@ -17,6 +17,7 @@ import {
   createSessionId,
   ensureBrain,
   ensureFrontDoor,
+  ensureGitignoreEntry,
   entryHeading,
   formatSaveTime,
   formatSessionLabel,
@@ -619,6 +620,50 @@ describe("tricksPreview", () => {
   it("falls back to the first lines without dated entries", () => {
     assert.equal(tricksPreview("# Tricks\n\n- Newest.\n- Oldest.\n"), "- Newest.\n- Oldest.");
     assert.equal(tricksPreview("# Tricks\n"), "");
+  });
+});
+
+describe("front door rule 9", () => {
+  it("tells Muse to back up before changing", () => {
+    assert.ok(
+      FRONT_DOOR_SECTION.includes(
+        "9. Before changing an existing file, copy it to .backups/<date>/<same path> first, and say where the copy is in one line.",
+      ),
+    );
+  });
+});
+
+describe("ensureGitignoreEntry", () => {
+  it("creates the file when missing", async () => {
+    const fs = fakeFs();
+    assert.equal(await ensureGitignoreEntry("root", ".backups/", fs), true);
+    assert.equal(fs.files.get(join("root", ".gitignore")), ".backups/\n");
+  });
+
+  it("appends without touching the rest", async () => {
+    const fs = fakeFs();
+    const target = join("root", ".gitignore");
+    fs.files.set(target, "node_modules/\n");
+    assert.equal(await ensureGitignoreEntry("root", ".backups/", fs), true);
+    assert.equal(fs.files.get(target), "node_modules/\n.backups/\n");
+  });
+
+  it("leaves the file alone when the entry is there", async () => {
+    const fs = fakeFs();
+    const target = join("root", ".gitignore");
+    for (const content of ["node_modules/\n.backups/\n", ".backups", "# nothing\n.backups/\n"]) {
+      fs.files.set(target, content);
+      assert.equal(await ensureGitignoreEntry("root", ".backups/", fs), false);
+      assert.equal(fs.files.get(target), content);
+    }
+  });
+
+  it("repairs a missing trailing newline", async () => {
+    const fs = fakeFs();
+    const target = join("root", ".gitignore");
+    fs.files.set(target, "node_modules/");
+    assert.equal(await ensureGitignoreEntry("root", ".backups/", fs), true);
+    assert.equal(fs.files.get(target), "node_modules/\n.backups/\n");
   });
 });
 

@@ -10,16 +10,21 @@ let brainProvider: BrainViewProvider | undefined;
 let brainSideProvider: BrainViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  controller = new ChatController(context.extensionUri, context.workspaceState, (files) => {
-    for (const provider of [brainProvider, brainSideProvider]) {
-      if (provider) {
-        void provider.refresh().then(
-          () => provider.flash(files),
-          () => undefined,
-        );
+  controller = new ChatController(
+    context.extensionUri,
+    context.workspaceState,
+    (files) => {
+      for (const provider of [brainProvider, brainSideProvider]) {
+        if (provider) {
+          void provider.refresh().then(
+            () => provider.flash(files),
+            () => undefined,
+          );
+        }
       }
-    }
-  });
+    },
+    context.storageUri?.fsPath,
+  );
   viewProvider = new ChatViewProvider(context.extensionUri, controller, () => {
     if (controller) {
       openChatPanel(context.extensionUri, controller);

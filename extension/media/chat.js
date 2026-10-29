@@ -21,6 +21,7 @@
   const thinkingEls = new Map();
   const toolEls = new Map();
   const approvalEls = new Map();
+  const undoEls = new Map();
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -207,6 +208,44 @@
     scrollToBottom();
   }
 
+  function addUndo(message) {
+    hideEmptyState();
+    let wrap = undoEls.get(message.id);
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.className = "undo";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn small";
+      button.textContent = message.label;
+      button.addEventListener("click", () => {
+        button.disabled = true;
+        vscode.postMessage({ type: "undo", id: message.id });
+      });
+      wrap.appendChild(button);
+      messagesEl.appendChild(wrap);
+      undoEls.set(message.id, wrap);
+    }
+    scrollToBottom();
+  }
+
+  function setUndoDone(id, state) {
+    const wrap = undoEls.get(id);
+    if (!wrap) {
+      return;
+    }
+    const button = wrap.querySelector("button");
+    if (!button) {
+      return;
+    }
+    if (state === "undone") {
+      button.disabled = true;
+      button.textContent = "Undone ✓";
+    } else {
+      button.disabled = false;
+    }
+  }
+
   function addNotice(message) {
     hideEmptyState();
     const notice = document.createElement("div");
@@ -249,6 +288,7 @@
     thinkingEls.clear();
     toolEls.clear();
     approvalEls.clear();
+    undoEls.clear();
     emptyStateEl.hidden = false;
     setStatus("");
     setRunning(false);
@@ -350,6 +390,16 @@
       case "saved":
         if (typeof message.text === "string") {
           addSaved(message);
+        }
+        break;
+      case "undo":
+        if (typeof message.id === "string" && typeof message.label === "string") {
+          addUndo(message);
+        }
+        break;
+      case "undoDone":
+        if (typeof message.id === "string" && (message.state === "undone" || message.state === "ready")) {
+          setUndoDone(message.id, message.state);
         }
         break;
       case "turn":

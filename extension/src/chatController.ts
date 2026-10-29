@@ -18,6 +18,7 @@ import {
   createSessionId,
   ensureBrain,
   ensureFrontDoor,
+  ensureGitignoreEntry,
   formatSaveTime,
   formatSessionLabel,
   isLabelTaken,
@@ -32,6 +33,12 @@ import {
   type SaveSections,
 } from "./brain/brain.js";
 import { QUICK_SAVE_PROMPT, SAVE_MY_DAY_PROMPT } from "./brain/prompts.js";
+import {
+  formatUndoTime,
+  NoGitError,
+  ShadowSnapshots,
+  type ChangedFile,
+} from "./safety/snapshots.js";
 import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import { type ApprovalCardEvent, MuseHost, type MuseHostEvent } from "./muse/museHost.js";
@@ -54,7 +61,9 @@ type TranscriptEvent =
   | ApprovalCardEvent
   | { type: "approvalDone"; id: string }
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
-  | { type: "saved"; text: string; backup?: string; sections: SavedSection[] };
+  | { type: "saved"; text: string; backup?: string; sections: SavedSection[] }
+  | { type: "undo"; id: string; label: string }
+  | { type: "undoDone"; id: string; state: "undone" | "ready" };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
@@ -84,6 +93,13 @@ interface SaveRun {
   label: string;
 }
 
+interface UndoTarget {
+  before: string;
+  after: string;
+  at: number;
+  files: ChangedFile[];
+}
+
 /**
  * Owns the Muse session and the chat history. Every attached surface shows
  * the same chat; a surface that (re)binds gets the history replayed.
@@ -109,6 +125,11 @@ export class ChatController {
   private pendingSave: "full" | undefined;
   private turnsSinceSave = 0;
   private lastSaveAt = Date.now();
+  private pendingBefore: { sha: string; at: number; excluded: string[] } | undefined;
+  private undos = new Map<string, UndoTarget>();
+  private undoCounter = 0;
+  private gitNoticeShown = false;
+  private shadowCache: { folder: string; shadow: ShadowSnapshots } | undefined;
   private readonly tickTimer: ReturnType<typeof setInterval>;
   private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
   private readonly createHostShared = singleFlight((folder: vscode.WorkspaceFolder) =>
@@ -119,6 +140,7 @@ export class ChatController {
     private readonly extensionUri: vscode.Uri,
     private readonly storage: vscode.Memento,
     private readonly onBrainChanged: (files: string[]) => void = () => undefined,
+    private readonly storageDir: string | undefined = undefined,
   ) {
     this.heartbeat();
     this.tickTimer = setInterval(() => {
@@ -237,6 +259,7 @@ export class ChatController {
       });
       return;
     }
+    this.pendingBefore = await this.takeBeforeSnapshot(folder);
     await host.send(await this.withBackground(folder, text), folder.uri.fsPath);
   }
 
@@ -518,6 +541,140 @@ export class ChatController {
     this.broadcast({ type: "status", text });
   }
 
+  /** Put back the files one reply changed, after a confirm listing them. */
+  public async undo(id: string): Promise<void> {
+    const target = this.undos.get(id);
+    if (!target) {
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const shadow = folder ? this.shadowFor(folder) : undefined;
+    if (!folder || !shadow) {
+      this.recordAndBroadcast({ type: "notice", kind: "info", text: "Couldn't undo that." });
+      this.recordAndBroadcast({ type: "undoDone", id, state: "ready" });
+      return;
+    }
+    let changed: string[];
+    try {
+      const [beforeKept, afterKept] = await Promise.all([shadow.has(target.before), shadow.has(target.after)]);
+      if (!beforeKept || !afterKept) {
+        this.recordAndBroadcast({ type: "notice", kind: "info", text: "That change is too old to undo." });
+        this.recordAndBroadcast({ type: "undoDone", id, state: "undone" });
+        return;
+      }
+      changed = await shadow.changedSince(target.files, target.after);
+    } catch (error) {
+      this.snapshotFailed(error, "Couldn't undo that.");
+      this.recordAndBroadcast({ type: "undoDone", id, state: "ready" });
+      return;
+    }
+    const lines = target.files.slice(0, 10).map((file) => {
+      const mark = changed.includes(file.path) ? " (changed since)" : "";
+      return `- ${file.path}${mark}`;
+    });
+    if (target.files.length > 10) {
+      lines.push(`…and ${target.files.length - 10} more`);
+    }
+    const time = formatUndoTime(new Date(target.at));
+    const choice = await vscode.window.showInformationMessage(
+      `Put back ${countFiles(target.files.length)} as they were at ${time}?`,
+      { detail: lines.join("\n"), modal: false },
+      "Undo these files",
+    );
+    if (choice !== "Undo these files") {
+      this.recordAndBroadcast({ type: "undoDone", id, state: "ready" });
+      return;
+    }
+    try {
+      const { restored, failed } = await shadow.restore(target.files, target.before);
+      if (restored.length > 0) {
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "info",
+          text: `Put back ${countFiles(restored.length)} as they were at ${time}.`,
+        });
+      }
+      if (failed.length > 0) {
+        this.recordAndBroadcast({ type: "notice", kind: "error", text: `Couldn't put back: ${failed.join(", ")}.` });
+      }
+      this.recordAndBroadcast({ type: "undoDone", id, state: "undone" });
+    } catch (error) {
+      this.snapshotFailed(error, "Couldn't undo that.");
+      this.recordAndBroadcast({ type: "undoDone", id, state: "ready" });
+    }
+  }
+
+  private shadowFor(folder: vscode.WorkspaceFolder): ShadowSnapshots | undefined {
+    if (!this.storageDir) {
+      return undefined;
+    }
+    if (this.shadowCache?.folder !== folder.uri.fsPath) {
+      this.shadowCache = {
+        folder: folder.uri.fsPath,
+        shadow: new ShadowSnapshots(folder.uri.fsPath, path.join(this.storageDir, "shadow.git")),
+      };
+    }
+    return this.shadowCache.shadow;
+  }
+
+  private async takeBeforeSnapshot(
+    folder: vscode.WorkspaceFolder,
+  ): Promise<{ sha: string; at: number; excluded: string[] } | undefined> {
+    const shadow = this.shadowFor(folder);
+    if (!shadow) {
+      return undefined;
+    }
+    try {
+      const snapshot = await shadow.snapshot("before turn");
+      return { sha: snapshot.sha, at: Date.now(), excluded: snapshot.excluded };
+    } catch (error) {
+      this.snapshotFailed(error);
+      return undefined;
+    }
+  }
+
+  /** After-snapshot, then an Undo button when the turn changed files. */
+  private async finishTurnSnapshot(
+    before: { sha: string; at: number; excluded: string[] } | undefined,
+  ): Promise<void> {
+    if (!before) {
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const shadow = folder ? this.shadowFor(folder) : undefined;
+    if (!folder || !shadow) {
+      return;
+    }
+    try {
+      const after = await shadow.snapshot("after turn");
+      const files = await shadow.diffFiles(before.sha, after.sha, before.excluded);
+      if (files.length === 0) {
+        return;
+      }
+      this.undoCounter += 1;
+      const id = `undo-${this.undoCounter}`;
+      this.undos.set(id, { before: before.sha, after: after.sha, at: before.at, files });
+      this.recordAndBroadcast({ type: "undo", id, label: `↩ Undo that (${countFiles(files.length)})` });
+    } catch (error) {
+      this.snapshotFailed(error);
+    }
+  }
+
+  private snapshotFailed(error: unknown, fallback = "Couldn't take a snapshot, so this reply has no Undo."): void {
+    if (error instanceof NoGitError) {
+      if (!this.gitNoticeShown) {
+        this.gitNoticeShown = true;
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "info",
+          text: "Install Git to get Undo on every change. Muse still backs up files before changing them.",
+        });
+      }
+      return;
+    }
+    this.recordAndBroadcast({ type: "notice", kind: "error", text: fallback });
+  }
+
   public approve(id: string, choiceId: string): void {
     this.approvalResolvers.get(id)?.(choiceId);
     this.approvalResolvers.delete(id);
@@ -542,6 +699,8 @@ export class ChatController {
       this.saveRun.cancelled = true;
     }
     this.pendingSave = undefined;
+    // The interrupted turn ends silently, so no after-snapshot pairs with this.
+    this.pendingBefore = undefined;
     const host = await this.ensureHost(folder);
     try {
       await host.newSession(folder.uri.fsPath);
@@ -672,6 +831,7 @@ export class ChatController {
     if (on) {
       await ensureBrain(folder.uri.fsPath);
       await ensureFrontDoor(folder.uri.fsPath);
+      await ensureGitignoreEntry(folder.uri.fsPath, ".backups/");
     }
     if (!this.memoryAnnounced) {
       this.memoryAnnounced = true;
@@ -786,6 +946,9 @@ export class ChatController {
       this.broadcast(event);
       if (!this.running) {
         this.persistTranscript();
+        const before = this.pendingBefore;
+        this.pendingBefore = undefined;
+        void this.finishTurnSnapshot(before);
         this.turnsSinceSave += 1;
         const pending = this.pendingSave;
         this.pendingSave = undefined;
@@ -911,6 +1074,10 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     void controller.saveMyDay();
     return;
   }
+  if (message.type === "undo" && typeof message.id === "string") {
+    void controller.undo(message.id);
+    return;
+  }
   if (message.type === "newChat") {
     void controller.newChat();
     return;
@@ -939,6 +1106,11 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** "1 file" or "3 files". */
+function countFiles(count: number): string {
+  return count === 1 ? "1 file" : `${count} files`;
 }
 
 /** Save sections in file order, with card titles, for the Saved card. */
