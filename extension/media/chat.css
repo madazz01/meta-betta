@@ -239,37 +239,143 @@ body {
   font-size: 0.9em;
 }
 
-.approval {
+#composer-wrap {
+  position: relative;
+}
+
+#picker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  max-height: 60vh;
+  overflow: auto;
   border: 1px solid var(--vscode-widget-border);
   border-radius: 8px;
   padding: 8px 10px;
   background-color: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  box-shadow: 0 -4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.15));
+  animation: picker-in 120ms ease-out;
 }
 
-.approval-title {
+@keyframes picker-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #picker {
+    animation: none;
+  }
+}
+
+.picker-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.picker-title {
   margin: 0 0 6px;
+  font-weight: 600;
 }
 
-.approval-stage {
-  margin: 0 0 6px;
-}
-
-.approval pre.approval-full {
-  font-size: 0.8em;
+.picker-count {
+  flex: none;
+  font-size: 0.85em;
   color: var(--vscode-descriptionForeground);
-  max-height: 80px;
 }
 
-.approval-why {
+.picker-stages {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.picker-stages li {
+  font-family: var(--vscode-editor-font-family, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-choices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.picker-choice {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
   width: 100%;
   box-sizing: border-box;
-  margin-top: 8px;
-  background-color: var(--vscode-input-background);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.picker-choice:hover,
+.picker-choice.selected {
+  background-color: var(--vscode-list-hoverBackground, var(--vscode-editor-background));
+  border-color: var(--vscode-widget-border);
+}
+
+.picker-number {
+  flex: none;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.picker-why {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 6px;
+  background-color: var(--vscode-editor-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border);
   border-radius: 4px;
   padding: 4px 6px;
   font: inherit;
+}
+
+.picker-full {
+  margin-top: 8px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.picker-full summary {
+  cursor: pointer;
+}
+
+.picker-full pre,
+.picker-detail {
+  margin: 6px 0 0;
+  padding: 6px;
+  border-radius: 4px;
+  background-color: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85em;
+  max-height: 80px;
+  overflow: auto;
 }
 
 .approval pre {

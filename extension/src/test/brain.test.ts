@@ -25,10 +25,12 @@ import {
   FRONT_DOOR_SECTION,
   greetingName,
   isBackupTargetSafe,
+  isGreetingMessage,
   isLabelTaken,
   isStarterMe,
   LIVE_LABEL_TTL_MS,
   needsCatchUp,
+  previousUserLeftHanging,
   splitSaveReply,
   startHereSection,
   stripBackgroundPrefix,
@@ -372,6 +374,84 @@ describe("buildBackgroundBlock", () => {
     });
     assert.ok(block.length <= 8000, `block is ${block.length} chars`);
     assert.ok(block.includes("### 2026-10-28 · 9"), "newest update kept");
+  });
+
+  it("skips the opener for a job", () => {
+    const block = buildBackgroundBlock({ me: "I'm Bryan." }, { greeting: false });
+    assert.ok(!block.includes("Open with 'Here's where we're up to:'"));
+    assert.ok(block.includes("Skip the 'Here's where we're up to' opener and get straight to their message."));
+  });
+
+  it("notes unfinished business, even on an empty brain", () => {
+    const block = buildBackgroundBlock({}, { unfinished: "add pancakes to readme.txt" });
+    assert.ok(block.startsWith("[Background:"));
+    assert.ok(
+      block.includes(
+        '## Unfinished business\nLast time they asked "add pancakes to readme.txt" and it didn\'t get done. ' +
+          "Open by asking if they want it done now.",
+      ),
+    );
+    assert.ok(block.endsWith("[End of background.]"));
+  });
+});
+
+describe("isGreetingMessage", () => {
+  it("tells greetings from jobs", () => {
+    for (const greeting of ["hi", "Hi!", "hey", "hello", "good morning", "morning!", "g'day", "yo"]) {
+      assert.equal(isGreetingMessage(greeting), true, greeting);
+    }
+    for (const job of ["use the shell to delete todo.txt", "morning, delete todo.txt", "continue working on X", ""]) {
+      assert.equal(isGreetingMessage(job), false, job);
+    }
+  });
+});
+
+describe("previousUserLeftHanging", () => {
+  it("finds a user message with no reply after the current one", () => {
+    assert.equal(
+      previousUserLeftHanging([
+        { type: "user", text: "add pancakes to readme.txt" },
+        { type: "user", text: "hi" },
+      ]),
+      "add pancakes to readme.txt",
+    );
+    // Notices and tool rows between the messages don't matter.
+    assert.equal(
+      previousUserLeftHanging([
+        { type: "user", text: "do the thing" },
+        { type: "notice", text: "Something went wrong." },
+        { type: "user", text: "morning" },
+      ]),
+      "do the thing",
+    );
+  });
+
+  it("finds nothing when the last message got a reply", () => {
+    assert.equal(
+      previousUserLeftHanging([
+        { type: "user", text: "hi" },
+        { type: "assistant", text: "Hello!" },
+        { type: "user", text: "delete todo.txt" },
+      ]),
+      undefined,
+    );
+    assert.equal(previousUserLeftHanging([{ type: "user", text: "hi" }]), undefined);
+    assert.equal(previousUserLeftHanging([]), undefined);
+    assert.equal(
+      previousUserLeftHanging([
+        { type: "user", text: "   " },
+        { type: "user", text: "hi" },
+      ]),
+      undefined,
+    );
+  });
+
+  it("bounds a long hanging message", () => {
+    const hanging = previousUserLeftHanging([
+      { type: "user", text: `do ${"x".repeat(500)}` },
+      { type: "user", text: "hi" },
+    ]);
+    assert.equal(hanging?.length, 200);
   });
 });
 

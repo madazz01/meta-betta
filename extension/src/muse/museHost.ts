@@ -30,31 +30,51 @@ import type {
   SkillRow,
   TaskRow,
 } from "../commands/slash.js";
-import { approvalCard, choiceHint, safestChoiceId } from "../lib/approvals.js";
+import {
+  allowedOnceRow,
+  alwaysAllowedRow,
+  approvalCard,
+  backedUpRow,
+  backupAction,
+  choiceHint,
+  currentStage,
+  describeStage,
+  findStageChoice,
+  isReadOnlyStage,
+  isRejectChoice,
+  lookedAtRow,
+  pickerTitle,
+  rejectedRow,
+  rememberedDecision,
+  safestChoiceId,
+  stageLabel,
+  type RememberedDecision,
+} from "../lib/approvals.js";
 import { historyEvent, isSandboxBugFailure, reasoningText, toolRowText } from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
 import { classifySpawnError, parseSandboxReady, shortReason } from "../lib/startup.js";
 import type { SessionUsageTotals } from "../lib/usage.js";
 
-export interface ApprovalChoiceCard {
+export interface PickerChoiceCard {
   id: string;
   label: string;
-  /** True when this choice takes "tell Muse why" text with the decision. */
-  acceptsFeedback?: boolean;
   /** Hover hint; only the always-allow choice carries one. */
   hint?: string;
+  /** The "No, tell Muse…" row: rejecting opens the one-line why box. */
+  isReject: boolean;
 }
 
-export interface ApprovalCardEvent {
-  type: "approval";
+export interface PickerEvent {
+  type: "picker";
+  /** The approval id; one picker per command, whatever its stages. */
   id: string;
   /** The subject kind ("shell", "fileAccess", …) for one-time notices. */
   kind: string;
   title: string;
   detail?: string;
-  /** "(step 2 of 3) …" for a multi-stage shell command. */
-  stage?: string;
-  choices: ApprovalChoiceCard[];
+  /** Short stage lines for a multi-stage shell command. */
+  stages?: string[];
+  choices: PickerChoiceCard[];
 }
 
 /** The panel's answer to an approval card: the clicked choice plus optional "why". */
@@ -69,7 +89,7 @@ export type MuseHostEvent =
   | { type: "thinking"; id: string; text: string }
   | { type: "tool"; id: string; text: string; done: boolean }
   | { type: "status"; text: string }
-  | ApprovalCardEvent
+  | PickerEvent
   | { type: "approvalDone"; id: string }
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
   | { type: "turn"; state: "started" | "done" }
@@ -85,10 +105,10 @@ export interface MuseHostOptions {
   trustWorkspace: boolean;
   emit: (event: MuseHostEvent) => void;
   /**
-   * Show an approval card and resolve with the clicked choice, or undefined
+   * Show the approval picker and resolve with the picked choice, or undefined
    * when the panel can't ask (closed) — the host then takes the safest choice.
    */
-  askApproval: (card: ApprovalCardEvent) => Promise<ApprovalAnswer | undefined>;
+  askApproval: (picker: PickerEvent) => Promise<ApprovalAnswer | undefined>;
   /**
    * Windows sandbox workaround (the metaBetta.windowsSandboxWorkaround
    * setting): spawn with the sandbox off and make Muse ask before every
@@ -169,6 +189,24 @@ function newTurnState(gen: number): TurnState {
   };
 }
 
+/**
+ * One command's approval state, keyed by approvalId: the picked choice
+ * (answered once, applied to every stage) plus read-only stage labels
+ * waiting for their quiet row.
+ */
+interface PendingCommand {
+  lookedAt: string[];
+  decided?: RememberedDecision;
+  timer?: ReturnType<typeof setTimeout>;
+  at: number;
+}
+
+/** Quiet "looked at" labels flush 1s after the last read-only stage. */
+const QUIET_FLUSH_MS = 1000;
+
+/** Per-command memories older than this are dropped. */
+const PENDING_TTL_MS = 5 * 60_000;
+
 export class MuseHost {
   private client: HostClient | undefined;
   private session: HostSession | undefined;
@@ -183,6 +221,12 @@ export class MuseHost {
   private approvalWaiters = new Set<(answer: ApprovalAnswer | undefined) => void>();
   /** Session ids with promptUnmatched confirmed (Windows workaround only). */
   private promptModeFor: string | undefined;
+  /** Per-command approval state, keyed by approvalId. */
+  private pendingApprovals = new Map<string, PendingCommand>();
+  /** The workspace approvals resolve backup paths against. */
+  private workspaceRoot = "";
+  private backupSeq = 0;
+  private quietSeq = 0;
   private recapWaiters = new Map<
     string,
     {
@@ -273,6 +317,12 @@ export class MuseHost {
       waiter.reject(new Error("Muse stopped."));
     }
     this.recapWaiters.clear();
+    for (const pending of this.pendingApprovals.values()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
+    }
+    this.pendingApprovals.clear();
     const client = this.client;
     this.client = undefined;
     this.session = undefined;
@@ -818,6 +868,7 @@ export class MuseHost {
   }
 
   private ensureStarted(workspaceRoot: string): Promise<HostSession> {
+    this.workspaceRoot = workspaceRoot;
     if (this.session) {
       return Promise.resolve(this.session);
     }
@@ -984,42 +1035,117 @@ export class MuseHost {
     });
   }
 
+  /**
+   * One ask per command, not per stage. Requests sharing an approvalId are
+   * one picker: the pick is remembered and later stages answer from memory.
+   * Read-only stages and rule-9 backups never reach the picker.
+   */
   private decideApproval(request: ApprovalRequestParams): Promise<ApprovalAnswer> {
-    const card = approvalCard(
-      request.subject,
-      request.toolName,
-      request.rawArgs,
-      request.currentRequirementId?.sourceIndex ?? 0,
-    );
+    const approvalId = request.approvalId;
+    const sourceIndex = request.currentRequirementId?.sourceIndex ?? 0;
     const shell = request.subject.kind === "shell";
+    const stages = shell ? (request.subject.stages ?? []) : [];
+    const stage = shell ? currentStage(request.subject.stages, sourceIndex) : undefined;
+    const argv = stage?.argv ?? [];
+    this.sweepPending();
+    const pending = this.pendingFor(approvalId);
+
+    if (pending.decided) {
+      const remembered = findStageChoice(request.availableChoices, pending.decided);
+      if (remembered !== undefined) {
+        return this.answerQuietly(approvalId, remembered);
+      }
+      // The remembered answer isn't offered for this stage: ask again.
+    } else if (shell && stage && isReadOnlyStage(argv)) {
+      const once = findStageChoice(request.availableChoices, "once");
+      if (once !== undefined) {
+        pending.lookedAt.push(stageLabel(argv));
+        this.armQuietFlush(approvalId, pending);
+        return this.answerQuietly(approvalId, once);
+      }
+    } else if (shell && stage && this.workspaceRoot !== "") {
+      const backup = backupAction(argv, this.workspaceRoot);
+      if (backup) {
+        const once = findStageChoice(request.availableChoices, "once");
+        if (once !== undefined) {
+          if (backup.kind === "copy") {
+            this.emit({
+              type: "tool",
+              id: `backup-${approvalId}-${this.backupSeq++}`,
+              text: backedUpRow(backup.files),
+              done: true,
+            });
+          }
+          return this.answerQuietly(approvalId, once);
+        }
+      }
+    }
+    return this.askPicker(request, pending, { shell, stages, argv });
+  }
+
+  /** Answer without asking; the panel never sees this stage. */
+  private answerQuietly(approvalId: string, choiceId: string): Promise<ApprovalAnswer> {
+    this.emit({ type: "approvalDone", id: approvalId });
+    return Promise.resolve({ choiceId });
+  }
+
+  private askPicker(
+    request: ApprovalRequestParams,
+    pending: PendingCommand,
+    view: { shell: boolean; stages: { argv: string[] }[]; argv: string[] },
+  ): Promise<ApprovalAnswer> {
+    const approvalId = request.approvalId;
+    // Earlier read-only stages of this command come first in the chat.
+    this.flushQuiet(approvalId, pending);
+    const sourceIndex = request.currentRequirementId?.sourceIndex ?? 0;
+    const card = approvalCard(request.subject, request.toolName, request.rawArgs, sourceIndex);
+    const hasStage = view.shell && view.argv.length > 0;
+    const description = hasStage ? describeStage(view.argv) : (card.detail ?? "that");
+    const prefix =
+      hasStage && view.argv[0] ? view.argv[0] : (card.detail ?? "that");
+    const stageLines =
+      view.shell && view.stages.length > 0
+        ? view.stages.map((entry) => shorten(entry.argv.join(" "), 80))
+        : undefined;
     return new Promise<ApprovalAnswer>((resolve) => {
       const finish = (answer: ApprovalAnswer | undefined) => {
         this.approvalWaiters.delete(finish);
         const choiceId = answer?.choiceId ?? safestChoiceId(request.availableChoices) ?? "";
+        const picked = request.availableChoices.find((choice) => choice.choiceId === choiceId);
+        const memory = picked ? rememberedDecision(picked) : undefined;
+        if (memory) {
+          pending.decided = memory;
+        }
         // Feedback only reaches a choice that takes it; the server would
         // refuse the decision otherwise.
-        const takesFeedback =
-          request.availableChoices.find((choice) => choice.choiceId === choiceId)?.acceptsFeedback === true;
+        const takesFeedback = picked?.acceptsFeedback === true;
         const feedback = takesFeedback ? answer?.feedback?.trim() || undefined : undefined;
+        const row =
+          memory === "always"
+            ? alwaysAllowedRow(prefix)
+            : memory === "reject"
+              ? rejectedRow(description, feedback)
+              : allowedOnceRow(description);
+        this.emit({ type: "tool", id: `approval-${approvalId}`, text: row, done: true });
         resolve(feedback === undefined ? { choiceId } : { choiceId, feedback });
-        this.emit({ type: "approvalDone", id: request.approvalId });
+        this.emit({ type: "approvalDone", id: approvalId });
       };
       this.approvalWaiters.add(finish);
       void this.options
         .askApproval({
-          type: "approval",
-          id: request.approvalId,
+          type: "picker",
+          id: approvalId,
           kind: request.subject.kind,
-          title: card.title,
+          title: hasStage ? pickerTitle(view.argv) : card.title,
           ...(card.detail === undefined ? {} : { detail: card.detail }),
-          ...(card.stageLine === undefined ? {} : { stage: card.stageLine }),
-          // Muse's own labels, in its order.
+          ...(stageLines === undefined ? {} : { stages: stageLines }),
+          // Muse's own labels, in its order; nothing invented.
           choices: request.availableChoices.map((choice) => {
-            const hint = shell ? choiceHint(choice) : undefined;
+            const hint = view.shell ? choiceHint(choice) : undefined;
             return {
               id: choice.choiceId,
               label: choice.label,
-              ...(choice.acceptsFeedback === true ? { acceptsFeedback: true as const } : {}),
+              isReject: isRejectChoice(choice),
               ...(hint === undefined ? {} : { hint }),
             };
           }),
@@ -1029,6 +1155,63 @@ export class MuseHost {
           () => finish(undefined),
         );
     });
+  }
+
+  private pendingFor(approvalId: string): PendingCommand {
+    let pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
+      pending = { lookedAt: [], at: Date.now() };
+      this.pendingApprovals.set(approvalId, pending);
+    }
+    pending.at = Date.now();
+    return pending;
+  }
+
+  private sweepPending(): void {
+    const cutoff = Date.now() - PENDING_TTL_MS;
+    for (const [id, pending] of this.pendingApprovals) {
+      if (pending.at < cutoff) {
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+        this.pendingApprovals.delete(id);
+      }
+    }
+  }
+
+  private armQuietFlush(approvalId: string, pending: PendingCommand): void {
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
+    pending.timer = setTimeout(() => {
+      pending.timer = undefined;
+      this.flushQuiet(approvalId, pending);
+    }, QUIET_FLUSH_MS);
+    pending.timer.unref?.();
+  }
+
+  private flushQuiet(approvalId: string, pending: PendingCommand): void {
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+      pending.timer = undefined;
+    }
+    if (pending.lookedAt.length === 0) {
+      return;
+    }
+    const labels = pending.lookedAt;
+    pending.lookedAt = [];
+    this.emit({
+      type: "tool",
+      id: `looked-${approvalId}-${this.quietSeq++}`,
+      text: lookedAtRow(labels),
+      done: true,
+    });
+  }
+
+  private flushAllQuiet(): void {
+    for (const [id, pending] of this.pendingApprovals) {
+      this.flushQuiet(id, pending);
+    }
   }
 
   private async followTurn(turn: HostTurn, state: TurnState): Promise<void> {
@@ -1204,6 +1387,7 @@ export class MuseHost {
     if (gen !== this.turnGen) {
       return;
     }
+    this.flushAllQuiet();
     this.currentTurnId = undefined;
     if (notice) {
       this.emit({ type: "notice", kind: notice.kind, text: notice.text });
@@ -1355,6 +1539,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function shorten(text: string, maxLength: number): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
 /** Command acks carry status "accepted"; anything else is a plain failure. */

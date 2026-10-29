@@ -393,6 +393,38 @@ function isGreetingOnly(clean: string): boolean {
   return rest === "";
 }
 
+/**
+ * True for a greeting ("hi", "good morning") as opposed to a job ("delete
+ * todo.txt"). The catch-up opener is only for greetings.
+ */
+export function isGreetingMessage(text: string): boolean {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean !== "" && isGreetingOnly(clean);
+}
+
+const UNFINISHED_LIMIT = 200;
+
+export interface HistoryMessageView {
+  type: string;
+  text?: string;
+}
+
+/**
+ * The last user message left without a reply (the window closed or crashed
+ * mid-turn). The history's newest user/assistant entry is the message just
+ * sent, so the one before it is the candidate; anything else (or nothing)
+ * means nothing is unfinished.
+ */
+export function previousUserLeftHanging(events: readonly HistoryMessageView[]): string | undefined {
+  const messages = events.filter((entry) => entry.type === "user" || entry.type === "assistant");
+  const candidate = messages[messages.length - 2];
+  if (!candidate || candidate.type !== "user" || !candidate.text?.trim()) {
+    return undefined;
+  }
+  const text = candidate.text.replace(/\s+/g, " ").trim();
+  return text.length > UNFINISHED_LIMIT ? `${text.slice(0, UNFINISHED_LIMIT - 1)}…` : text;
+}
+
 /** `Session 7f3a · login page`, or `Session 7f3a` before the topic is known. */
 export function formatSessionLabel(id: string, topic: string): string {
   return topic ? `Session ${id} · ${topic}` : `Session ${id}`;
@@ -410,23 +442,37 @@ const BACKGROUND_END = "[End of background.]";
 const BACKGROUND_BUDGET = 8000;
 const SECTION_BUDGETS = { me: 1500, startHere: 1500, tricks: 1000, todayLog: 1000 };
 
+export interface BackgroundOptions {
+  /** Greetings get the "Here's where we're up to" opener; jobs skip it. */
+  greeting?: boolean;
+  /** A user message left without a reply, to ask about. */
+  unfinished?: string;
+}
+
 /**
  * The background block sent with the first message of a chat: what the brain
- * remembers, marked as background, with a note telling Muse to open with
- * "Here's where we're up to:" from it. Missing sections are skipped; when the
- * block would run over budget, the oldest updates are dropped first so the
- * newest are always kept. Empty when the brain has nothing to say.
+ * remembers, marked as background. Greetings open with "Here's where we're
+ * up to:" from it; jobs skip the opener and get straight to it. Missing
+ * sections are skipped; when the block would run over budget, the oldest
+ * updates are dropped first so the newest are always kept. Empty when the
+ * brain has nothing to say.
  */
-export function buildBackgroundBlock(files: BrainFiles): string {
+export function buildBackgroundBlock(files: BrainFiles, options?: BackgroundOptions): string {
   const me = capSection(files.me, SECTION_BUDGETS.me);
   const startHere = capSection(projectStartHere(files.project), SECTION_BUDGETS.startHere);
   const tricks = capSection(files.tricks, SECTION_BUDGETS.tricks);
   const todayLog = capSection(files.todayLog, SECTION_BUDGETS.todayLog);
   const updates = lastUpdates(files.project, 10);
+  const greeting = options?.greeting ?? true;
+  const unfinished = options?.unfinished?.trim() ? options.unfinished.trim() : undefined;
 
+  const opener = greeting
+    ? `Open with 'Here's where we're up to:' from this. `
+    : `Skip the 'Here's where we're up to' opener and get straight to their message. `;
   const framing =
     `${BACKGROUND_START} what I remember about you and this project. ` +
-    `Open with 'Here's where we're up to:' from this. No need to read the brain files. ` +
+    opener +
+    `No need to read the brain files. ` +
     `Remember rule 9: back up a file to .backups/ before changing it.]\n\n`;
   const fixed: string[] = [];
   if (me) {
@@ -440,6 +486,12 @@ export function buildBackgroundBlock(files: BrainFiles): string {
   }
   if (todayLog) {
     fixed.push(`## Today's log\n${todayLog}`);
+  }
+  if (unfinished) {
+    fixed.push(
+      `## Unfinished business\nLast time they asked "${unfinished}" and it didn't get done. ` +
+        `Open by asking if they want it done now.`,
+    );
   }
 
   // Updates take whatever budget is left, newest first so the newest survive.

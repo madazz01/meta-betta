@@ -25,7 +25,9 @@
   const assistantEls = new Map();
   const thinkingEls = new Map();
   const toolEls = new Map();
-  const approvalEls = new Map();
+  const pickerQueue = [];
+  let pickerShown = null;
+  let pickerSelected = 0;
   const undoEls = new Map();
   const nudgeEls = new Map();
   const cardEls = new Map();
@@ -46,9 +48,14 @@
     statusEl.textContent = text;
   }
 
+  // The message box stays disabled while a picker is up.
+  function updateComposer() {
+    input.disabled = running || pickerQueue.length > 0;
+  }
+
   function setRunning(next) {
     running = next;
-    input.disabled = next;
+    updateComposer();
     sendButton.textContent = next ? "Stop" : "Send";
     if (!next) {
       dropCatchingUp();
@@ -456,78 +463,200 @@
     scrollToBottom();
   }
 
-  function addApproval(message) {
+  // One picker at a time over the message box; the rest wait their turn.
+  function onPicker(message) {
     hideEmptyState();
-    const card = document.createElement("div");
-    card.className = "approval";
+    pickerQueue.push(message);
+    renderPicker();
+  }
+
+  function dropPicker(id) {
+    const index = pickerQueue.findIndex((entry) => entry.id === id);
+    if (index === -1) {
+      return;
+    }
+    pickerQueue.splice(index, 1);
+    renderPicker();
+  }
+
+  function renderPicker() {
+    document.getElementById("picker")?.remove();
+    updateComposer();
+    const message = pickerQueue[0];
+    if (!message) {
+      pickerShown = null;
+      return;
+    }
+    pickerShown = message.id;
+    pickerSelected = 0;
+    const wrap = document.getElementById("composer-wrap");
+    const panel = document.createElement("div");
+    panel.id = "picker";
+    panel.tabIndex = 0;
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", message.title);
+
+    const head = document.createElement("div");
+    head.className = "picker-head";
     const title = document.createElement("p");
-    title.className = "approval-title";
+    title.className = "picker-title";
     title.textContent = message.title;
-    card.appendChild(title);
-    const hasStage = typeof message.stage === "string" && message.stage;
-    if (hasStage) {
-      const stage = document.createElement("p");
-      stage.className = "approval-stage";
-      stage.textContent = message.stage;
-      card.appendChild(stage);
+    head.appendChild(title);
+    if (pickerQueue.length > 1) {
+      const count = document.createElement("span");
+      count.className = "picker-count";
+      count.textContent = `1 of ${pickerQueue.length}`;
+      head.appendChild(count);
     }
-    if (typeof message.detail === "string" && message.detail) {
-      const detail = document.createElement("pre");
-      if (hasStage) {
-        detail.className = "approval-full";
+    panel.appendChild(head);
+
+    if (Array.isArray(message.stages) && message.stages.length > 0) {
+      const stages = document.createElement("ol");
+      stages.className = "picker-stages";
+      for (const line of message.stages) {
+        const item = document.createElement("li");
+        item.textContent = line;
+        stages.appendChild(item);
       }
-      detail.textContent = message.detail;
-      card.appendChild(detail);
+      panel.appendChild(stages);
     }
-    const choices = document.createElement("div");
-    choices.className = "approval-choices";
-    let why = null;
-    for (const choice of message.choices) {
+
+    const list = document.createElement("ol");
+    list.className = "picker-choices";
+    const rows = [];
+    message.choices.forEach((choice, index) => {
+      const item = document.createElement("li");
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "btn";
-      button.textContent = choice.label;
+      button.className = "picker-choice";
+      const number = document.createElement("span");
+      number.className = "picker-number";
+      number.textContent = String(index + 1);
+      button.appendChild(number);
+      const label = document.createElement("span");
+      label.textContent = choice.isReject ? "No, tell Muse what to do instead…" : choice.label;
+      button.appendChild(label);
       if (typeof choice.hint === "string" && choice.hint) {
         button.title = choice.hint;
       }
-      button.addEventListener("click", () => {
-        const answer = { type: "approve", id: message.id, choiceId: choice.id };
-        if (why && why.value.trim() !== "") {
-          answer.feedback = why.value;
-        }
-        vscode.postMessage(answer);
-        disableApproval(message.id, button);
-      });
-      choices.appendChild(button);
-    }
-    card.appendChild(choices);
-    if (message.choices.some((choice) => choice && choice.acceptsFeedback === true)) {
-      why = document.createElement("input");
-      why.type = "text";
-      why.className = "approval-why";
-      why.placeholder = "Tell Muse why (optional)";
-      why.setAttribute("aria-label", "Tell Muse why (optional)");
-      card.appendChild(why);
-    }
-    messagesEl.appendChild(card);
-    approvalEls.set(message.id, card);
-    scrollToBottom();
-  }
+      button.addEventListener("click", () => activatePickerChoice(index));
+      item.appendChild(button);
+      list.appendChild(item);
+      rows.push(button);
+    });
+    panel.appendChild(list);
 
-  function disableApproval(id, chosen) {
-    const card = approvalEls.get(id);
-    if (!card) {
-      return;
-    }
-    for (const button of card.querySelectorAll("button")) {
-      button.disabled = true;
-      if (button === chosen) {
-        button.classList.add("chosen");
+    const why = document.createElement("input");
+    why.type = "text";
+    why.className = "picker-why";
+    why.placeholder = "Tell Muse what to do instead… (empty = just don't)";
+    why.setAttribute("aria-label", "Tell Muse what to do instead");
+    why.hidden = true;
+    panel.appendChild(why);
+
+    if (typeof message.detail === "string" && message.detail) {
+      if (Array.isArray(message.stages) && message.stages.length > 0) {
+        const full = document.createElement("details");
+        full.className = "picker-full";
+        const summary = document.createElement("summary");
+        summary.textContent = "Full command";
+        full.appendChild(summary);
+        const pre = document.createElement("pre");
+        pre.textContent = message.detail;
+        full.appendChild(pre);
+        panel.appendChild(full);
+      } else {
+        const detail = document.createElement("pre");
+        detail.className = "picker-detail";
+        detail.textContent = message.detail;
+        panel.appendChild(detail);
       }
     }
-    for (const field of card.querySelectorAll("input")) {
-      field.disabled = true;
+
+    panel.addEventListener("keydown", (event) => {
+      if (event.target === why) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          answerPicker(pickerRejectId(), why.value);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          answerPicker(pickerRejectId(), undefined);
+        }
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        movePickerSelection(1, rows);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        movePickerSelection(-1, rows);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        activatePickerChoice(pickerSelected);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        answerPicker(pickerRejectId(), undefined);
+      } else if (/^[1-9]$/.test(event.key)) {
+        event.preventDefault();
+        activatePickerChoice(Number(event.key) - 1);
+      }
+    });
+
+    wrap.appendChild(panel);
+    paintPickerSelection(rows);
+    panel.focus({ preventScroll: true });
+  }
+
+  function movePickerSelection(step, rows) {
+    if (rows.length === 0) {
+      return;
     }
+    pickerSelected = (pickerSelected + step + rows.length) % rows.length;
+    paintPickerSelection(rows);
+  }
+
+  function paintPickerSelection(rows) {
+    rows.forEach((button, index) => {
+      button.classList.toggle("selected", index === pickerSelected);
+    });
+  }
+
+  function activatePickerChoice(index) {
+    const message = pickerQueue[0];
+    const choice = message?.choices[index];
+    if (!message || !choice) {
+      return;
+    }
+    if (choice.isReject) {
+      const why = document.querySelector("#picker .picker-why");
+      if (why) {
+        why.hidden = false;
+        why.focus();
+      }
+      return;
+    }
+    answerPicker(choice.id, undefined);
+  }
+
+  // Esc always means plain reject; without a reject choice there is nothing
+  // to do (in practice the server always offers one).
+  function pickerRejectId() {
+    const message = pickerQueue[0];
+    return message?.choices.find((choice) => choice.isReject)?.id;
+  }
+
+  function answerPicker(choiceId, feedback) {
+    const message = pickerQueue[0];
+    if (!message || typeof choiceId !== "string") {
+      return;
+    }
+    const answer = { type: "approve", id: message.id, choiceId };
+    if (typeof feedback === "string" && feedback.trim() !== "") {
+      answer.feedback = feedback;
+    }
+    vscode.postMessage(answer);
+    dropPicker(message.id);
   }
 
   function addSaved(message) {
@@ -682,7 +811,8 @@
     assistantEls.clear();
     thinkingEls.clear();
     toolEls.clear();
-    approvalEls.clear();
+    pickerQueue.length = 0;
+    renderPicker();
     undoEls.clear();
     nudgeEls.clear();
     cardEls.clear();
@@ -869,14 +999,14 @@
           setStatus(message.text);
         }
         break;
-      case "approval":
+      case "picker":
         if (typeof message.id === "string" && typeof message.title === "string" && Array.isArray(message.choices)) {
-          addApproval(message);
+          onPicker(message);
         }
         break;
       case "approvalDone":
         if (typeof message.id === "string") {
-          disableApproval(message.id, undefined);
+          dropPicker(message.id);
         }
         break;
       case "notice":

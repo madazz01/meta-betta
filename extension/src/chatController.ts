@@ -64,11 +64,13 @@ import {
   ensureGitignoreEntry,
   formatSaveTime,
   formatSessionLabel,
+  isGreetingMessage,
   isLabelTaken,
   isStarterMe,
   LIVE_LABEL_TTL_MS,
   needsCatchUp,
   nodeBrainFs,
+  previousUserLeftHanging,
   splitSaveReply,
   todayLogFile,
   topicFromFirstMessage,
@@ -93,7 +95,7 @@ import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import {
   type ApprovalAnswer,
-  type ApprovalCardEvent,
+  type PickerEvent,
   MuseHost,
   type MuseHostEvent,
 } from "./muse/museHost.js";
@@ -113,7 +115,7 @@ type TranscriptEvent =
   | ChatAssistantMessage
   | { type: "thinking"; id: string; text: string }
   | { type: "tool"; id: string; text: string; done: boolean }
-  | ApprovalCardEvent
+  | PickerEvent
   | { type: "approvalDone"; id: string }
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
   | { type: "saved"; text: string; backup?: string; sections: SavedSection[] }
@@ -910,7 +912,15 @@ export class ChatController {
       nodeBrainFs.readFile(path.join(root, "brain", "tricks.md")).catch(() => undefined),
       nodeBrainFs.readFile(path.join(root, "brain", todayLogFile())).catch(() => undefined),
     ]);
-    const background = buildBackgroundBlock({ me, project, tricks, todayLog });
+    const hanging = previousUserLeftHanging(this.history);
+    const background = buildBackgroundBlock(
+      { me, project, tricks, todayLog },
+      {
+        greeting: isGreetingMessage(text),
+        // A bare slash run leaves no assistant reply; that isn't unfinished.
+        unfinished: hanging && !parseSlashCommand(hanging) ? hanging : undefined,
+      },
+    );
     if (!background) {
       return text;
     }
@@ -1910,30 +1920,32 @@ export class ChatController {
       // Keep "Saving…" until the save itself reports.
       return;
     }
-    if (event.type === "approval" || event.type === "approvalDone") {
-      this.recordAndBroadcast(event);
+    if (event.type === "picker" || event.type === "approvalDone") {
+      // Pickers are never recorded: an answered request leaves only its row.
+      this.broadcast(event);
       return;
     }
     // Thinking and tool rows stay out of the chat during a save.
   }
 
-  private askApproval(card: ApprovalCardEvent): Promise<ApprovalAnswer | undefined> {
+  private askApproval(picker: PickerEvent): Promise<ApprovalAnswer | undefined> {
     if (this.sinks.size === 0 || !this.running) {
       return Promise.resolve(undefined);
     }
     return new Promise((resolve) => {
-      this.approvalResolvers.set(card.id, resolve);
-      this.maybeShellNotice(card);
-      this.recordAndBroadcast(card);
+      this.approvalResolvers.set(picker.id, resolve);
+      this.maybeShellNotice(picker);
+      // Broadcast, never recorded: the answered row is the history.
+      this.broadcast(picker);
     });
   }
 
   /**
-   * One plain line the first time a command card appears (Windows workaround
-   * only), then never again for this folder.
+   * One plain line the first time a command picker appears (Windows
+   * workaround only), then never again for this folder.
    */
-  private maybeShellNotice(card: ApprovalCardEvent): void {
-    if (card.kind !== "shell" || !this.shellWorkaround) {
+  private maybeShellNotice(picker: PickerEvent): void {
+    if (picker.kind !== "shell" || !this.shellWorkaround) {
       return;
     }
     if (this.storage.get<boolean>(SHELL_NOTICE_KEY) === true) {

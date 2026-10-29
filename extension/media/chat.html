@@ -30,11 +30,13 @@
       <button class="chip" type="button" data-chip="usage" title="See what this chat is costing">📊 <span class="chip-label">Usage</span></button>
     </div>
     <div id="slash-menu" hidden></div>
-    <form id="composer">
-      <textarea id="input" rows="2" placeholder="Type a message…" aria-label="Type a message"></textarea>
-      <button id="effort" type="button" title="Thinking effort: Normal — click to change">⚡ Normal</button>
-      <button id="send" type="submit">Send</button>
-    </form>
+    <div id="composer-wrap">
+      <form id="composer">
+        <textarea id="input" rows="2" placeholder="Type a message…" aria-label="Type a message"></textarea>
+        <button id="effort" type="button" title="Thinking effort: Normal — click to change">⚡ Normal</button>
+        <button id="send" type="submit">Send</button>
+      </form>
+    </div>
     <p id="status" aria-live="polite"></p>
   </main>
   <script nonce="__NONCE__" src="__MARKDOWN_URI__"></script>

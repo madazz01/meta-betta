@@ -7,7 +7,7 @@ import {
   MuseHost,
   serveArgs,
   type ApprovalAnswer,
-  type ApprovalCardEvent,
+  type PickerEvent,
   type HostClient,
   type HostConnection,
   type HostSession,
@@ -392,58 +392,82 @@ describe("prompt mode", () => {
 
 const SHELL_COMMAND = "New-Item mb-probe-dir; Remove-Item mb-probe-dir; Write-Output sandbox-ok";
 
-/** Recorded shape: 3 shell stages at step 2, Muse's own three choices. */
-function shellRequest(): ApprovalRequestParams {
+const SHELL_CHOICES = [
+  { choiceId: "allow_once", decision: "approved", label: "Allow once", scope: "once" },
+  {
+    choiceId: "allow_local_prefix",
+    decision: "approvedPolicyAmendment",
+    label: "Always allow in this workspace: New-Item ...",
+    scope: "localPersistent",
+  },
+  { choiceId: "abort", decision: "abort", label: "Reject", scope: "once", acceptsFeedback: true },
+];
+
+/** Recorded shape: shell stages, Muse's own three choices, at one step. */
+function shellRequest(
+  sourceIndex = 1,
+  options?: {
+    approvalId?: string;
+    command?: string;
+    stages?: string[][];
+    choices?: typeof SHELL_CHOICES;
+  },
+): ApprovalRequestParams {
+  const argvList = options?.stages ?? [
+    ["New-Item", "mb-probe-dir"],
+    ["Remove-Item", "mb-probe-dir"],
+    ["Write-Output", "sandbox-ok"],
+  ];
+  const approvalId = options?.approvalId ?? "appr-1";
   return {
-    approvalId: "appr-1",
-    availableChoices: [
-      { choiceId: "allow_once", decision: "approved", label: "Allow once", scope: "once" },
-      {
-        choiceId: "allow_local_prefix",
-        decision: "approvedPolicyAmendment",
-        label: "Always allow in this workspace: New-Item ...",
-        scope: "localPersistent",
-      },
-      { choiceId: "abort", decision: "abort", label: "Reject", scope: "once", acceptsFeedback: true },
-    ],
-    currentRequirementId: { approvalId: "appr-1", sourceIndex: 1 },
+    approvalId,
+    availableChoices: options?.choices ?? SHELL_CHOICES,
+    currentRequirementId: { approvalId, sourceIndex },
     subject: {
       kind: "shell",
-      command: SHELL_COMMAND,
-      stages: [
-        { argv: ["New-Item", "mb-probe-dir"], position: 1, totalStages: 3 },
-        { argv: ["Remove-Item", "mb-probe-dir"], position: 2, totalStages: 3 },
-        { argv: ["Write-Output", "sandbox-ok"], position: 3, totalStages: 3 },
-      ],
+      command: options?.command ?? SHELL_COMMAND,
+      stages: argvList.map((argv, index) => ({ argv, position: index + 1, totalStages: argvList.length })),
     },
     toolName: "bash",
     rawArgs: "{}",
   } as unknown as ApprovalRequestParams;
 }
 
-describe("approval cards", () => {
-  it("cards a shell request with its step, labels and hints", async () => {
+function toolRowTexts(events: MuseHostEvent[]): string[] {
+  return events.filter((event) => event.type === "tool").map((event) => event.text);
+}
+
+describe("approval picker", () => {
+  it("picks a shell request with its title, stages, labels and hints", async () => {
     const fake = fakeApprovalHost({ choiceId: "abort", feedback: "use mkdir instead" });
     await fake.host.prepare(process.cwd());
     assert.deepEqual(await fake.decide(shellRequest()), { choiceId: "abort", feedback: "use mkdir instead" });
-    assert.equal(fake.cards.length, 1);
-    const card = fake.cards[0];
-    assert.equal(card?.kind, "shell");
-    assert.equal(card?.title, "Muse wants to run a command");
-    assert.equal(card?.stage, "(step 2 of 3) Remove-Item mb-probe-dir");
-    assert.equal(card?.detail, SHELL_COMMAND);
+    assert.equal(fake.pickers.length, 1);
+    const picker = fake.pickers[0];
+    assert.equal(picker?.type, "picker");
+    assert.equal(picker?.kind, "shell");
+    assert.equal(picker?.title, "Delete mb-probe-dir?");
+    assert.equal(picker?.detail, SHELL_COMMAND);
+    assert.deepEqual(picker?.stages, [
+      "New-Item mb-probe-dir",
+      "Remove-Item mb-probe-dir",
+      "Write-Output sandbox-ok",
+    ]);
     assert.deepEqual(
-      card?.choices.map((choice) => choice.label),
+      picker?.choices.map((choice) => choice.label),
       ["Allow once", "Always allow in this workspace: New-Item ...", "Reject"],
     );
     assert.equal(
-      card?.choices[1]?.hint,
+      picker?.choices[1]?.hint,
       "Muse won't ask again for commands starting with this, in this project only.",
     );
-    assert.equal(card?.choices[0]?.hint, undefined);
-    assert.equal(card?.choices[2]?.acceptsFeedback, true);
-    assert.equal(card?.choices[0]?.acceptsFeedback, undefined);
+    assert.equal(picker?.choices[0]?.hint, undefined);
+    assert.equal(picker?.choices[2]?.isReject, true);
+    assert.equal(picker?.choices[0]?.isReject, false);
     assert.ok(fake.events.some((event) => event.type === "approvalDone" && event.id === "appr-1"));
+    assert.ok(
+      toolRowTexts(fake.events).includes("✗ Rejected: delete mb-probe-dir, told Muse: use mkdir instead"),
+    );
     await fake.host.dispose();
   });
 
@@ -458,6 +482,111 @@ describe("approval cards", () => {
     const fake = fakeApprovalHost(undefined);
     await fake.host.prepare(process.cwd());
     assert.deepEqual(await fake.decide(shellRequest()), { choiceId: "abort" });
+    assert.ok(toolRowTexts(fake.events).includes("✗ Rejected: delete mb-probe-dir"));
+    await fake.host.dispose();
+  });
+
+  it("asks once per command and answers every stage from memory", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    const stages = [
+      ["Remove-Item", "a.txt"],
+      ["Remove-Item", "b.txt"],
+    ];
+    assert.deepEqual(
+      await fake.decide(shellRequest(0, { approvalId: "cmd-1", stages })),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 1);
+    assert.deepEqual(
+      await fake.decide(shellRequest(1, { approvalId: "cmd-1", stages })),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 1);
+    assert.deepEqual(
+      toolRowTexts(fake.events).filter((text) => text.startsWith("✓ Allowed once")),
+      ["✓ Allowed once: delete a.txt"],
+    );
+    await fake.host.dispose();
+  });
+
+  it("applies each stage's own always-allow choice", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_local_prefix" });
+    await fake.host.prepare(process.cwd());
+    const stages = [
+      ["New-Item", "-ItemType", "File", "a.txt"],
+      ["Remove-Item", "a.txt"],
+    ];
+    assert.deepEqual(await fake.decide(shellRequest(0, { approvalId: "cmd-2", stages })), {
+      choiceId: "allow_local_prefix",
+    });
+    const later = SHELL_CHOICES.map((choice) =>
+      choice.choiceId === "allow_local_prefix"
+        ? { ...choice, choiceId: "allow_local_prefix_rm", label: "Always allow in this workspace: Remove-Item" }
+        : choice,
+    );
+    assert.deepEqual(await fake.decide(shellRequest(1, { approvalId: "cmd-2", stages, choices: later })), {
+      choiceId: "allow_local_prefix_rm",
+    });
+    assert.equal(fake.pickers.length, 1);
+    assert.ok(toolRowTexts(fake.events).includes("✓ Always allowed here: New-Item"));
+    await fake.host.dispose();
+  });
+
+  it("auto-allows read-only stages with one quiet row", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    const stages = [["Get-ChildItem"], ["Select-Object", "Name"], ["Remove-Item", "todo.txt"]];
+    assert.deepEqual(await fake.decide(shellRequest(0, { approvalId: "cmd-3", stages })), {
+      choiceId: "allow_once",
+    });
+    assert.deepEqual(await fake.decide(shellRequest(1, { approvalId: "cmd-3", stages })), {
+      choiceId: "allow_once",
+    });
+    assert.equal(fake.pickers.length, 0);
+    await fake.decide(shellRequest(2, { approvalId: "cmd-3", stages }));
+    assert.equal(fake.pickers.length, 1);
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: Get-ChildItem, Select-Object"));
+    await fake.host.dispose();
+  });
+
+  it("flushes quiet rows when the turn ends", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    await fake.decide(shellRequest(0, { approvalId: "cmd-4", stages: [["node", "--version"]] }));
+    assert.equal(fake.pickers.length, 0);
+    await fake.host.send("run node --version", process.cwd());
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: node --version"));
+    await fake.host.dispose();
+  });
+
+  it("auto-allows rule-9 backups, quietly for mkdir", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    const stages = [
+      ["New-Item", "-ItemType", "Directory", ".backups/today"],
+      ["Copy-Item", "todo.txt", ".backups/today/todo.txt"],
+      ["Remove-Item", "todo.txt"],
+    ];
+    await fake.decide(shellRequest(0, { approvalId: "cmd-5", stages }));
+    await fake.decide(shellRequest(1, { approvalId: "cmd-5", stages }));
+    assert.equal(fake.pickers.length, 0);
+    await fake.decide(shellRequest(2, { approvalId: "cmd-5", stages }));
+    assert.equal(fake.pickers.length, 1);
+    const rows = toolRowTexts(fake.events);
+    assert.ok(rows.includes("✓ Backed up todo.txt"));
+    assert.ok(rows.includes("✓ Allowed once: delete todo.txt"));
+    assert.ok(rows.indexOf("✓ Backed up todo.txt") < rows.indexOf("✓ Allowed once: delete todo.txt"));
+    await fake.host.dispose();
+  });
+
+  it("asks when a copy leaves the backup rules", async () => {
+    const fake = fakeApprovalHost({ choiceId: "abort" });
+    await fake.host.prepare(process.cwd());
+    await fake.decide(
+      shellRequest(0, { approvalId: "cmd-6", stages: [["Copy-Item", "todo.txt", "elsewhere/todo.txt"]] }),
+    );
+    assert.equal(fake.pickers.length, 1);
     await fake.host.dispose();
   });
 });
@@ -465,14 +594,14 @@ describe("approval cards", () => {
 interface ApprovalFake {
   host: MuseHost;
   events: MuseHostEvent[];
-  cards: ApprovalCardEvent[];
+  pickers: PickerEvent[];
   decide: (request: ApprovalRequestParams) => Promise<ApprovalAnswer>;
 }
 
-/** Captures the registered approval handler plus the card it builds. */
+/** Captures the registered approval handler plus the picker it builds. */
 function fakeApprovalHost(answer: ApprovalAnswer | undefined): ApprovalFake {
   const events: MuseHostEvent[] = [];
-  const cards: ApprovalCardEvent[] = [];
+  const pickers: PickerEvent[] = [];
   let handler: ((request: ApprovalRequestParams) => Promise<ApprovalAnswer>) | undefined;
   const session: HostSession = {
     sessionId: "session-1",
@@ -501,14 +630,14 @@ function fakeApprovalHost(answer: ApprovalAnswer | undefined): ApprovalFake {
       emit: (event) => {
         events.push(event);
       },
-      askApproval: (card) => {
-        cards.push(card);
+      askApproval: (picker) => {
+        pickers.push(picker);
         return Promise.resolve(answer);
       },
       createHost: async () => ({ client, connection }),
     }),
     events,
-    cards,
+    pickers,
     decide: (request) => {
       if (!handler) {
         throw new Error("no approval handler registered");
