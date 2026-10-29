@@ -17,7 +17,7 @@ import type { ApprovalRequestParams, ItemDeltaParams } from "@muse-code/sdk/dist
 import { stripBackgroundPrefix } from "../brain/brain.js";
 import { isSavePrompt } from "../brain/prompts.js";
 import { approvalCard, safestChoiceId } from "../lib/approvals.js";
-import { historyEvent, reasoningText, toolRowText } from "../lib/items.js";
+import { historyEvent, isSandboxBugFailure, reasoningText, toolRowText } from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
 import { classifySpawnError, parseSandboxReady, shortReason } from "../lib/startup.js";
 
@@ -133,6 +133,8 @@ export class MuseHost {
   private starting: Promise<HostSession> | undefined;
   /** Bumped by every send and every stop; older turns' late events are dropped. */
   private turnGen = 0;
+  /** The sandbox-bug plain line shows once per session, then rows stay short. */
+  private sandboxBugNoted = false;
   private approvalWaiters = new Set<(choiceId: string | undefined) => void>();
 
   public constructor(private readonly options: MuseHostOptions) {}
@@ -250,6 +252,7 @@ export class MuseHost {
     }
     this.turnGen += 1;
     this.currentTurnId = undefined;
+    this.sandboxBugNoted = false;
     for (const finish of this.approvalWaiters) {
       finish(undefined);
     }
@@ -533,16 +536,22 @@ export class MuseHost {
           state.toolSeen = true;
           this.emit({ type: "status", text: "Muse is working…" });
         }
-        const row = toolRowText({
-          kind: String(item.kind),
-          tool: item.tool,
-          args: item.args,
-          displayLabel: item.displayLabel,
-          status: String(item.status),
-          failureReason: item.failureReason,
-          fallbackText: item.fallbackText,
-          commandText: item.commandText,
-        });
+        const row = toolRowText(
+          {
+            kind: String(item.kind),
+            tool: item.tool,
+            args: item.args,
+            displayLabel: item.displayLabel,
+            status: String(item.status),
+            failureReason: item.failureReason,
+            fallbackText: item.fallbackText,
+            commandText: item.commandText,
+          },
+          this.sandboxBugNoted,
+        );
+        if (row.failed && isSandboxBugFailure(item.failureReason)) {
+          this.sandboxBugNoted = true;
+        }
         this.emit({ type: "tool", id: item.itemId, text: row.text, done: row.done });
       }
     }

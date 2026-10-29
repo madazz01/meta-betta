@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { historyEvent, reasoningText, toolRowText } from "../lib/items.js";
+import {
+  historyEvent,
+  isSandboxBugFailure,
+  reasoningText,
+  SANDBOX_BUG_TEXT,
+  toolRowText,
+} from "../lib/items.js";
 
 describe("toolRowText", () => {
   it("renders a running tool call with its active label", () => {
@@ -92,6 +98,45 @@ describe("toolRowText", () => {
       failureReason: "file not found",
     });
     assert.equal(row.text, "📄 Edit app.js (didn't work: file not found)");
+    assert.equal(row.failed, true);
+  });
+
+  it("spots the Windows sandbox bug in a failure reason", () => {
+    assert.equal(
+      isSandboxBugFailure("sandbox enforcement unavailable: windows_elevated setup_required"),
+      true,
+    );
+    assert.equal(isSandboxBugFailure("denied"), false);
+    assert.equal(isSandboxBugFailure(undefined), false);
+  });
+
+  it("shows one plain line for the sandbox bug, never the raw error", () => {
+    const row = toolRowText({
+      kind: "toolCall",
+      tool: "bash",
+      args: JSON.stringify({ command: "npm test" }),
+      status: "failed",
+      failureReason: "sandbox enforcement unavailable: windows_elevated setup_required",
+    });
+    assert.equal(
+      row.text,
+      `▶ Running npm test (didn't work: ${SANDBOX_BUG_TEXT})`,
+    );
+    assert.equal(row.failed, true);
+  });
+
+  it("keeps later sandbox failures short once the line has shown", () => {
+    const row = toolRowText(
+      {
+        kind: "toolCall",
+        tool: "bash",
+        args: JSON.stringify({ command: "npm test" }),
+        status: "failed",
+        failureReason: "sandbox enforcement unavailable: windows_elevated setup_required",
+      },
+      true,
+    );
+    assert.equal(row.text, "▶ Running npm test (didn't work)");
     assert.equal(row.failed, true);
   });
 

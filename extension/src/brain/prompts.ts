@@ -32,7 +32,8 @@ export function isSavePrompt(text: string): boolean {
  * extension files the answers itself (name line, START HERE) and shows the
  * memory message after — Muse just keeps it warm and brief.
  */
-export const WELCOME_PROMPT = `Welcome script. Run it one step at a time, one question per reply, waiting for the user each step. Don't edit any files. If they dodge a question, roll with it warmly and move on.
+export const WELCOME_PROMPT = `This is the first-time welcome. Ignore the 'Here's where we're up to' rule for now and follow these steps.
+Welcome script. Run it one step at a time, one question per reply, waiting for the user each step. Don't edit any files. If they dodge a question, roll with it warmly and move on.
 Step 1 — start with exactly this line: "G'day! What should I call you?"
 Step 2 — when they answer, greet them by name if they gave one, then ask: "What are we working on in this folder?"
 Step 3 — when they answer that, play it back in one line (what it is, briefly), and stop there.

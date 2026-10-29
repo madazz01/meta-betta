@@ -98,7 +98,7 @@ const FRONT_DOOR_END = "<!-- meta-betta:end -->";
 export const FRONT_DOOR_SECTION = `<!-- meta-betta:start -->
 ## Meta Betta brain (read first, every session)
 1. Read brain/me.md, brain/project.md (START HERE plus the last 10 entries under Updates), brain/tricks.md and today's brain/log file if it exists.
-2. Open your first reply with "Here's where we're up to:" and 2–3 plain lines from the latest updates, then ask what we're doing today. If the user says "continue working on X", use the latest entries about X and carry on from there.
+2. Unless brain/me.md is still the starter template (the extension runs a welcome instead), open your first reply with "Here's where we're up to:" and 2–3 plain lines from the latest updates, then ask what we're doing today. If the user says "continue working on X", use the latest entries about X and carry on from there.
 3. Talk to the user the way brain/me.md says. Plain English, no jargon.
 4. Before building, propose the simplest version in one or two lines and wait for a yes.
 5. When something fails, try 2–3 other ways before giving up, and say plainly which one worked. Mention any workaround that worked, and it gets saved to brain/tricks.md when we save.

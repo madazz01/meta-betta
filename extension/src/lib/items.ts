@@ -18,8 +18,25 @@ export interface ToolRow {
   failed: boolean;
 }
 
-/** One short row for a toolCall, userShell, or any other work item. */
-export function toolRowText(item: ToolItemView): ToolRow {
+/**
+ * Plain words for the Muse 1.4.14 bug where shell commands fail under
+ * `muse serve` on Windows ("sandbox enforcement unavailable"), while file
+ * tools keep working.
+ */
+export const SANDBOX_BUG_TEXT =
+  "Muse can't run commands from Meta Betta yet (a Muse bug on Windows we've reported). It can still read and change files.";
+
+/** True when a tool failure is that sandbox bug, not a real error. */
+export function isSandboxBugFailure(failureReason: string | undefined): boolean {
+  return !!failureReason && /sandbox enforcement unavailable/i.test(failureReason);
+}
+
+/**
+ * One short row for a toolCall, userShell, or any other work item.
+ * A sandbox-bug failure shows the plain line instead of the raw error, first
+ * time only (sandboxNoted); repeats stay a bare "(didn't work)".
+ */
+export function toolRowText(item: ToolItemView, sandboxNoted = false): ToolRow {
   const failed = item.status === "failed" || item.status === "rejected" || item.status === "timedOut";
   const done = item.status !== "inProgress";
   let text: string;
@@ -32,8 +49,12 @@ export function toolRowText(item: ToolItemView): ToolRow {
     text = `Working…${extra}`;
   }
   if (failed) {
-    const why = item.failureReason ? `: ${truncate(singleLine(item.failureReason), 80)}` : "";
-    text += ` (didn't work${why})`;
+    if (isSandboxBugFailure(item.failureReason)) {
+      text += sandboxNoted ? " (didn't work)" : ` (didn't work: ${SANDBOX_BUG_TEXT})`;
+    } else {
+      const why = item.failureReason ? `: ${truncate(singleLine(item.failureReason), 80)}` : "";
+      text += ` (didn't work${why})`;
+    }
   } else if (done) {
     text += " ✓";
   }

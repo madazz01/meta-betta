@@ -122,7 +122,38 @@ describe("MuseHost", () => {
     assert.equal(fake.startedFresh, true);
     await fake.host.dispose();
   });
+
+  it("shows the sandbox-bug line once per session", async () => {
+    const failure = (itemId: string): FoldedItem => ({
+      kind: "toolCall",
+      itemId,
+      revision: 1,
+      status: "failed",
+      tool: "bash",
+      failureReason: "sandbox enforcement unavailable: windows_elevated setup_required",
+    });
+    const fake = fakeItemTurns([[failure("t1"), failure("t2")], [failure("t3")]]);
+
+    await fake.host.send("run the tests", process.cwd());
+    const first = toolTexts(fake.events);
+    assert.equal(first.length, 2);
+    assert.ok(first[0]?.includes("Muse can't run commands from Meta Betta yet"));
+    assert.ok(!first[0]?.includes("windows_elevated"));
+    assert.equal(first[1], "▶ Running (didn't work)");
+
+    await fake.host.newSession(process.cwd());
+    await fake.host.send("run them again", process.cwd());
+    const second = toolTexts(fake.events).slice(2);
+    assert.equal(second.length, 1);
+    assert.ok(second[0]?.includes("Muse can't run commands from Meta Betta yet"));
+
+    await fake.host.dispose();
+  });
 });
+
+function toolTexts(events: MuseHostEvent[]): string[] {
+  return events.filter((event) => event.type === "tool").map((event) => event.text);
+}
 
 type CompletedParams = Extract<TurnOutcome, { kind: "completed" }>["params"];
 
@@ -202,6 +233,59 @@ function fakeRunningTurn(
     finishTurn,
   };
   return fake;
+}
+
+interface ItemTurnsFake {
+  host: MuseHost;
+  events: MuseHostEvent[];
+}
+
+/** Each sendUserTurn yields the next list of items, then completes. */
+function fakeItemTurns(turnItems: FoldedItem[][]): ItemTurnsFake {
+  const events: MuseHostEvent[] = [];
+  let calls = 0;
+  const session: HostSession = {
+    sessionId: "session-1",
+    sendUserTurn: async () => {
+      calls += 1;
+      const items = turnItems[calls - 1] ?? [];
+      const turn: HostTurn = {
+        turnId: `turn-${calls}`,
+        items: async function* () {
+          yield* items;
+        },
+        deltas: async function* () {},
+        completed: Promise.resolve(terminalOutcome("completed")),
+      };
+      return turn;
+    },
+    onApproval: () => undefined,
+    onApprovalError: () => undefined,
+    fold: { items: { list: () => [] } },
+  };
+  const client: HostClient = {
+    startSession: async () => session,
+    resumeSession: async () => {
+      throw new Error("no saved session in this test");
+    },
+    close: async () => undefined,
+  };
+  const connection: HostConnection = {
+    command: async () => ({}),
+  };
+  return {
+    host: new MuseHost({
+      museBin: "unused",
+      version: "0.0.1",
+      trustWorkspace: false,
+      emit: (event) => {
+        events.push(event);
+      },
+      askApproval: () => Promise.resolve(undefined),
+      createHost: async () => ({ client, connection }),
+    }),
+    events,
+  };
 }
 
 interface StoredFake extends FakeHost {

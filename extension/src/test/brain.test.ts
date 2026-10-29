@@ -579,6 +579,14 @@ describe("welcome words", () => {
     assert.ok(WELCOME_PROMPT.includes("Don't edit any files."));
   });
 
+  it("tells Muse to skip the catch-up rule for the welcome", () => {
+    assert.ok(
+      WELCOME_PROMPT.startsWith(
+        "This is the first-time welcome. Ignore the 'Here's where we're up to' rule for now and follow these steps.",
+      ),
+    );
+  });
+
   it("memory message links the Brain panel and Save my day", () => {
     assert.ok(WELCOME_MEMORY_TEXT.includes("`brain/`"));
     assert.ok(WELCOME_MEMORY_TEXT.includes("Save my day"));
@@ -731,6 +739,16 @@ describe("front door rule 9", () => {
     assert.ok(
       FRONT_DOOR_SECTION.includes(
         "9. Before changing an existing file, copy it to .backups/<date>/<same path> first, and say where the copy is in one line.",
+      ),
+    );
+  });
+});
+
+describe("front door rule 2", () => {
+  it("skips the catch-up when me.md is still the starter template", () => {
+    assert.ok(
+      FRONT_DOOR_SECTION.includes(
+        "2. Unless brain/me.md is still the starter template (the extension runs a welcome instead)",
       ),
     );
   });
