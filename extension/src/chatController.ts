@@ -27,6 +27,7 @@ import {
   splitSaveReply,
   todayLogFile,
   topicFromFirstMessage,
+  UnsafeBackupError,
   type SaveSection,
   type SaveSections,
 } from "./brain/brain.js";
@@ -377,8 +378,10 @@ export class ChatController {
       let status = `Saved ✓ ${formatSaveTime(new Date())}`;
       if (backup === "ok") {
         status += " · Backed up ✓";
-      } else if (backup === "failed") {
+      } else if (backup === "missing") {
         status += " · backup folder missing";
+      } else if (backup === "unsafe") {
+        status += " · backup folder must be outside this folder";
       }
       this.setStatus(status);
       return;
@@ -389,9 +392,11 @@ export class ChatController {
       backup:
         backup === "ok"
           ? "Backed up ✓"
-          : backup === "failed"
+          : backup === "missing"
             ? "Couldn't reach the backup folder — this save stayed on this computer."
-            : undefined,
+            : backup === "unsafe"
+              ? "The backup folder must be outside this folder — this save stayed on this computer."
+              : undefined,
       sections: savedSections(sections),
     });
     this.setStatus("Ready");
@@ -438,7 +443,7 @@ export class ChatController {
     return written;
   }
 
-  private async backup(folder: vscode.WorkspaceFolder): Promise<"off" | "ok" | "failed"> {
+  private async backup(folder: vscode.WorkspaceFolder): Promise<"off" | "ok" | "missing" | "unsafe"> {
     const backupFolder = vscode.workspace.getConfiguration("metaBetta").get<string>("backupFolder", "").trim();
     if (!backupFolder) {
       return "off";
@@ -446,8 +451,8 @@ export class ChatController {
     try {
       await backupBrain(folder.uri.fsPath, backupFolder);
       return "ok";
-    } catch {
-      return "failed";
+    } catch (error) {
+      return error instanceof UnsafeBackupError ? "unsafe" : "missing";
     }
   }
 

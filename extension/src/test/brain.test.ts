@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +23,7 @@ import {
   formatUpdated,
   FRONT_DOOR_SECTION,
   greetingName,
+  isBackupTargetSafe,
   isLabelTaken,
   LIVE_LABEL_TTL_MS,
   needsCatchUp,
@@ -31,6 +32,9 @@ import {
   stripBackgroundPrefix,
   todayLogFile,
   topicFromFirstMessage,
+  tricksPreview,
+  UnsafeBackupError,
+  type BackupOps,
   type BrainFs,
 } from "../brain/brain.js";
 import { isSavePrompt, QUICK_SAVE_PROMPT, SAVE_MY_DAY_PROMPT } from "../brain/prompts.js";
@@ -523,6 +527,98 @@ describe("backupBrain", () => {
     } finally {
       await rm(sandbox, { recursive: true, force: true });
     }
+  });
+
+  it("refuses targets that would endanger the live brain, deleting nothing", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "meta-betta-backup-"));
+    try {
+      const root = join(sandbox, "work");
+      await mkdir(join(root, "brain"), { recursive: true });
+      await writeFile(join(root, "brain", "project.md"), "live", "utf8");
+      const dangerous = [
+        sandbox, // parent of workspace: target IS the live brain
+        join(root, "backups"), // backup folder inside the workspace
+        root, // same folder
+        join(root, "brain", "sub"), // backup folder inside the live brain
+      ];
+      for (const backupFolder of dangerous) {
+        await assert.rejects(backupBrain(root, backupFolder), UnsafeBackupError);
+      }
+      assert.equal(await readFile(join(root, "brain", "project.md"), "utf8"), "live");
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("a copy that fails halfway leaves the old backup alone", async () => {
+    const sandbox = await mkdtemp(join(tmpdir(), "meta-betta-backup-"));
+    try {
+      const root = join(sandbox, "work");
+      const backupFolder = join(sandbox, "backups");
+      await mkdir(join(root, "brain"), { recursive: true });
+      await mkdir(join(backupFolder, "work", "brain"), { recursive: true });
+      await writeFile(join(root, "brain", "project.md"), "new", "utf8");
+      await writeFile(join(backupFolder, "work", "brain", "project.md"), "old", "utf8");
+      const real: BackupOps = { stat, mkdir, rm, cp, rename };
+      const failing: BackupOps = {
+        ...real,
+        cp: async (src, dest) => {
+          await real.cp(src, dest, { recursive: true });
+          throw new Error("disk full halfway");
+        },
+      };
+      await assert.rejects(backupBrain(root, backupFolder, failing), /disk full halfway/);
+      assert.equal(await readFile(join(backupFolder, "work", "brain", "project.md"), "utf8"), "old");
+    } finally {
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isBackupTargetSafe", () => {
+  it("refuses the live brain, the workspace and anything nested either way", () => {
+    const sandbox = join(tmpdir(), "meta-betta-targets");
+    const root = join(sandbox, "work");
+    assert.equal(isBackupTargetSafe(root, sandbox), false); // target is the live brain
+    assert.equal(isBackupTargetSafe(root, join(root, "backups")), false); // inside the workspace
+    assert.equal(isBackupTargetSafe(root, root), false); // same folder
+    assert.equal(isBackupTargetSafe(join(sandbox, "sub", "brain", "sub"), sandbox), false); // contains it
+    assert.equal(isBackupTargetSafe(join(sandbox, "brain", "brain"), sandbox), false); // is the workspace
+    assert.equal(isBackupTargetSafe(root, join(sandbox, "backups")), true);
+    assert.equal(isBackupTargetSafe(root, join("..", "backups")), true); // relative counts from the workspace
+    assert.equal(isBackupTargetSafe(root, "."), false);
+  });
+
+  it("compares case-insensitively on Windows", { skip: process.platform !== "win32" }, () => {
+    assert.equal(isBackupTargetSafe("C:\\MB-TEST", "c:\\"), false);
+    assert.equal(isBackupTargetSafe("c:\\mb-test", "C:\\BACKUPS"), true);
+  });
+});
+
+describe("tricksPreview", () => {
+  it("shows the newest saved entries first", () => {
+    const content = [
+      "# Tricks",
+      "",
+      "Workarounds that worked, one per line, newest first.",
+      "",
+      "### 2026-10-27 10:00 · Session aa11",
+      "",
+      "- First workaround.",
+      "",
+      "### 2026-10-28 09:00 · Session bb22",
+      "",
+      "- Second workaround.",
+      "",
+    ].join("\n");
+    const preview = tricksPreview(content);
+    assert.ok(preview.indexOf("Second workaround.") < preview.indexOf("First workaround."));
+    assert.ok(preview.includes("### 2026-10-28 09:00 · Session bb22"));
+  });
+
+  it("falls back to the first lines without dated entries", () => {
+    assert.equal(tricksPreview("# Tricks\n\n- Newest.\n- Oldest.\n"), "- Newest.\n- Oldest.");
+    assert.equal(tricksPreview("# Tricks\n"), "");
   });
 });
 

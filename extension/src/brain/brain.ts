@@ -2,8 +2,8 @@
 // session. All file access goes through BrainFs so tests use a fake.
 
 import { randomBytes } from "node:crypto";
-import { appendFile, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { appendFile, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, join, resolve, sep } from "node:path";
 
 export interface BrainFs {
   exists(path: string): Promise<boolean>;
@@ -398,7 +398,9 @@ export function buildBrainCards(inputs: BrainCardInput[], nowMs: number = Date.n
         ? "Nothing here yet."
         : input.file === "project.md"
           ? startHereSection(input.content)
-          : firstLines(input.content, 6),
+          : input.file === "tricks.md"
+            ? tricksPreview(input.content)
+            : firstLines(input.content, 6),
   }));
 }
 
@@ -422,6 +424,34 @@ function firstLines(content: string, count: number): string {
 /** The START HERE section of project.md (up to the next heading). */
 export function startHereSection(content: string): string {
   return firstLines(projectStartHere(content) ?? content, 6);
+}
+
+/**
+ * Tricks preview, newest entry first. Entries are appended (never prepended),
+ * so the last three saved entries lead. Falls back to the first lines for
+ * old files without dated entries (already newest first by convention).
+ */
+export function tricksPreview(content: string): string {
+  const entries: string[] = [];
+  let current: string[] = [];
+  for (const line of content.split("\n")) {
+    if (line.startsWith("### ")) {
+      if (current.length > 0) {
+        entries.push(current.join("\n").trim());
+      }
+      current = [line];
+    } else if (current.length > 0) {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) {
+    entries.push(current.join("\n").trim());
+  }
+  const kept = entries.filter((entry) => entry.length > 0);
+  if (kept.length === 0) {
+    return firstLines(content, 6);
+  }
+  return kept.slice(-3).reverse().join("\n\n");
 }
 
 /** A first name from me.md ("I'm Bryan", "my name is Bryan"), if any. */
@@ -539,18 +569,75 @@ export function formatSaveTime(now: Date): string {
   return `${hour12}:${pad(now.getMinutes())}${meridiem}`;
 }
 
+/** Thrown when the backup target would endanger the live brain. Nothing is deleted. */
+export class UnsafeBackupError extends Error {
+  public constructor(root: string, backupFolder: string) {
+    super(`Refusing to back up ${root} into ${backupFolder}: the backup must live outside the workspace.`);
+    this.name = "UnsafeBackupError";
+  }
+}
+
+/**
+ * True when the backup target is safe: not the live brain itself, neither
+ * inside the workspace nor containing it. Pure path math, no disk touched.
+ * A relative backup folder counts from the workspace.
+ */
+export function isBackupTargetSafe(root: string, backupFolder: string): boolean {
+  const workspace = normBackupPath(root);
+  const live = normBackupPath(join(root, "brain"));
+  const target = normBackupPath(join(resolve(root, backupFolder), basename(root), "brain"));
+  if (target === live || target === workspace) {
+    return false;
+  }
+  return !target.startsWith(workspace + sep) && !workspace.startsWith(target + sep);
+}
+
+function normBackupPath(value: string): string {
+  const resolved = resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/** File operations backupBrain needs; a seam so tests can fail a copy halfway. */
+export interface BackupOps {
+  stat: (path: string) => Promise<unknown>;
+  mkdir: (path: string, options: { recursive: boolean }) => Promise<unknown>;
+  rm: (path: string, options: { recursive: boolean; force: boolean }) => Promise<void>;
+  cp: (src: string, dest: string, options: { recursive: boolean }) => Promise<void>;
+  rename: (from: string, to: string) => Promise<void>;
+}
+
+const defaultBackupOps: BackupOps = { stat, mkdir, rm, cp, rename };
+
 /**
  * Copy brain/ to <backupFolder>/<workspace name>/brain/, replacing the old
- * copy. Throws when the backup folder is missing or not writable; the caller
- * says so in one plain line and carries on.
+ * copy. Refuses (UnsafeBackupError, nothing deleted) when the target is the
+ * live brain, inside the workspace, or contains it. Copies to a temp folder
+ * first and swaps it in, so a failed copy never leaves you with no backup.
+ * Throws when the backup folder is missing or not writable; the caller says
+ * so in one plain line and carries on.
  */
-export async function backupBrain(root: string, backupFolder: string): Promise<void> {
-  await stat(backupFolder);
-  const parent = join(backupFolder, basename(root));
-  await mkdir(parent, { recursive: true });
+export async function backupBrain(
+  root: string,
+  backupFolder: string,
+  ops: BackupOps = defaultBackupOps,
+): Promise<void> {
+  if (!isBackupTargetSafe(root, backupFolder)) {
+    throw new UnsafeBackupError(root, backupFolder);
+  }
+  const dest = resolve(root, backupFolder);
+  await ops.stat(dest);
+  const parent = join(dest, basename(root));
+  await ops.mkdir(parent, { recursive: true });
   const target = join(parent, "brain");
-  await rm(target, { recursive: true, force: true });
-  await cp(join(root, "brain"), target, { recursive: true });
+  // Our own pid-tagged temp folder, so two windows saving at once don't
+  // share one. Only our own is ever cleared: another window's temp folder
+  // may hold a copy in progress. (A crash can leave a brain.tmp-<pid>
+  // folder behind; it's harmless.)
+  const tmp = join(parent, `brain.tmp-${process.pid}`);
+  await ops.rm(tmp, { recursive: true, force: true });
+  await ops.cp(join(root, "brain"), tmp, { recursive: true });
+  await ops.rm(target, { recursive: true, force: true });
+  await ops.rename(tmp, target);
 }
 
 /**
