@@ -4,6 +4,7 @@
   "description": "The dev's assistant: a friendly chat panel on top of Muse Code, with a memory of you and your project.",
   "publisher": "madazz01",
   "version": "0.0.1",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
   },

@@ -16,4 +16,8 @@ Meta Betta is built the way it asks you to work: one human steering, AIs doing t
 
 `git log` shows who did each step.
 
+## Free for everyone
+
+Meta Betta is free and open source under the [MIT licence](LICENSE): use it, change it, share it. You still need Muse Code itself, and Muse usage is billed by Meta as usual (free credits, plan or pay as you go).
+
 Work in progress.
