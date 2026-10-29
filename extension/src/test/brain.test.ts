@@ -304,6 +304,7 @@ describe("buildBackgroundBlock", () => {
     const block = buildBackgroundBlock({ me: "I'm Bryan.", project, tricks: "Restart it.", todayLog: "Did things." });
     assert.ok(block.startsWith("[Background:"));
     assert.ok(block.includes("Open with 'Here's where we're up to:' from this. No need to read the brain files."));
+    assert.ok(block.includes("Remember rule 9: back up a file to .backups/ before changing it."));
     assert.ok(block.includes("## About you\nI'm Bryan."));
     assert.ok(block.includes("## Project: START HERE\nWe build widgets."));
     assert.ok(block.includes("## Latest updates\n### 2026-10-26 09:00 · Session aaaa · one\n\nFirst update."));

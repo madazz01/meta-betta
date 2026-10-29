@@ -261,7 +261,8 @@ export function buildBackgroundBlock(files: BrainFiles): string {
 
   const framing =
     `${BACKGROUND_START} what I remember about you and this project. ` +
-    `Open with 'Here's where we're up to:' from this. No need to read the brain files.]\n\n`;
+    `Open with 'Here's where we're up to:' from this. No need to read the brain files. ` +
+    `Remember rule 9: back up a file to .backups/ before changing it.]\n\n`;
   const fixed: string[] = [];
   if (me) {
     fixed.push(`## About you\n${me}`);

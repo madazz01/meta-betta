@@ -322,6 +322,89 @@ export function formatUndoTime(at: Date): string {
   return `${at.getHours()}:${minutes < 10 ? "0" : ""}${minutes}`;
 }
 
+export interface GitSearchInput {
+  /** The user's git.path setting (string or list). */
+  settingPaths?: string[];
+  /** Path from VS Code's built-in Git extension, if available. */
+  extensionPath?: string;
+  platform?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Where to look for git, in order: the git.path setting, VS Code's own Git
+ * extension, then the well-known install paths. (PATH itself is the last
+ * resort in findGitBin: VS Code can predate the Git install in its PATH.)
+ */
+export function gitCandidates(input: GitSearchInput): string[] {
+  const platform = input.platform ?? process.platform;
+  const env = input.env ?? process.env;
+  const paths: string[] = [];
+  for (const setting of input.settingPaths ?? []) {
+    if (setting.trim() !== "") {
+      paths.push(setting);
+    }
+  }
+  if (input.extensionPath?.trim()) {
+    paths.push(input.extensionPath);
+  }
+  if (platform === "win32") {
+    const homes: [string | undefined, string][] = [
+      [env["ProgramFiles"], "Git\\cmd\\git.exe"],
+      [env["ProgramFiles(x86)"], "Git\\cmd\\git.exe"],
+      [env["LOCALAPPDATA"], "Programs\\Git\\cmd\\git.exe"],
+    ];
+    for (const [home, tail] of homes) {
+      if (home) {
+        paths.push(join(home, tail));
+      }
+    }
+  } else {
+    paths.push("/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git");
+  }
+  return paths;
+}
+
+export interface FindGitDeps extends GitSearchInput {
+  exists?: (path: string) => Promise<boolean>;
+  onPath?: () => Promise<boolean>;
+}
+
+/**
+ * First candidate that exists, else "git" when it's on PATH, else NoGitError.
+ * The exists/onPath seams let tests drive the lookup order with fakes.
+ */
+export async function findGitBin(deps: FindGitDeps = {}): Promise<string> {
+  const exists =
+    deps.exists ??
+    (async (path: string) => {
+      try {
+        return (await stat(path)).isFile();
+      } catch {
+        return false;
+      }
+    });
+  for (const candidate of gitCandidates(deps)) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+  const onPath =
+    deps.onPath ??
+    (async () => {
+      try {
+        await execFileAsync("git", ["--version"]);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  if (await onPath()) {
+    return "git";
+  }
+  throw new NoGitError();
+}
+
 /** Work-tree relative paths of files over the size limit (forward slashes). */
 async function bigFileExcludes(workTree: string): Promise<string[]> {
   const excludes: string[] = [];

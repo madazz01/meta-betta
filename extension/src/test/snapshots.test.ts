@@ -8,7 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
+  findGitBin,
   formatUndoTime,
+  gitCandidates,
   LARGE_FILE_BYTES,
   NoGitError,
   ShadowSnapshots,
@@ -284,5 +286,57 @@ describe("formatUndoTime", () => {
   it("words the time like 10:40", () => {
     assert.equal(formatUndoTime(new Date(2026, 9, 29, 10, 40)), "10:40");
     assert.equal(formatUndoTime(new Date(2026, 9, 29, 9, 5)), "9:05");
+  });
+});
+
+describe("gitCandidates", () => {
+  it("orders setting, bundled extension, then well-known paths", () => {
+    const env = { ProgramFiles: "C:\\PF", "ProgramFiles(x86)": "C:\\PF86", LOCALAPPDATA: "C:\\LA" };
+    assert.deepEqual(
+      gitCandidates({ settingPaths: ["C:\\mine\\git.exe"], extensionPath: "C:\\ext\\git.exe", platform: "win32", env }),
+      [
+        "C:\\mine\\git.exe",
+        "C:\\ext\\git.exe",
+        join("C:\\PF", "Git\\cmd\\git.exe"),
+        join("C:\\PF86", "Git\\cmd\\git.exe"),
+        join("C:\\LA", "Programs\\Git\\cmd\\git.exe"),
+      ],
+    );
+    assert.deepEqual(gitCandidates({ platform: "darwin", env: {} }), [
+      "/usr/bin/git",
+      "/opt/homebrew/bin/git",
+      "/usr/local/bin/git",
+    ]);
+  });
+
+  it("skips blanks and missing homes", () => {
+    assert.deepEqual(gitCandidates({ settingPaths: ["", "  "], platform: "win32", env: {} }), []);
+    assert.deepEqual(gitCandidates({ extensionPath: "  ", platform: "linux", env: {} }), [
+      "/usr/bin/git",
+      "/opt/homebrew/bin/git",
+      "/usr/local/bin/git",
+    ]);
+  });
+});
+
+describe("findGitBin", () => {
+  const deps = (present: string[], pathGit: boolean) => ({
+    settingPaths: ["C:\\mine\\git.exe"],
+    extensionPath: "C:\\ext\\git.exe",
+    platform: "win32",
+    env: { ProgramFiles: "C:\\PF" },
+    exists: async (path: string) => present.includes(path),
+    onPath: async () => pathGit,
+  });
+
+  it("takes the first candidate that exists", async () => {
+    assert.equal(await findGitBin(deps(["C:\\mine\\git.exe"], true)), "C:\\mine\\git.exe");
+    assert.equal(await findGitBin(deps(["C:\\ext\\git.exe"], true)), "C:\\ext\\git.exe");
+    assert.equal(await findGitBin(deps([join("C:\\PF", "Git\\cmd\\git.exe")], true)), join("C:\\PF", "Git\\cmd\\git.exe"));
+  });
+
+  it("falls back to PATH, then gives up with NoGitError", async () => {
+    assert.equal(await findGitBin(deps([], true)), "git");
+    await assert.rejects(findGitBin(deps([], false)), NoGitError);
   });
 });

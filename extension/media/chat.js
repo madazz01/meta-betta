@@ -241,6 +241,9 @@
     if (state === "undone") {
       button.disabled = true;
       button.textContent = "Undone ✓";
+    } else if (state === "gone") {
+      button.disabled = true;
+      button.textContent = "Too old to undo";
     } else {
       button.disabled = false;
     }
@@ -398,7 +401,7 @@
         }
         break;
       case "undoDone":
-        if (typeof message.id === "string" && (message.state === "undone" || message.state === "ready")) {
+        if (typeof message.id === "string" && (message.state === "undone" || message.state === "ready" || message.state === "gone")) {
           setUndoDone(message.id, message.state);
         }
         break;

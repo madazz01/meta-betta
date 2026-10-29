@@ -4,7 +4,13 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { parseSendMessage } from "./lib/chat.js";
 import { parseFileLink } from "./lib/links.js";
-import { buildTranscript, cleanTranscript } from "./lib/session.js";
+import {
+  buildTranscript,
+  cleanTranscript,
+  cleanUndos,
+  UndoReplayer,
+  type StoredUndo,
+} from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
 import {
   appendEntry,
@@ -33,12 +39,7 @@ import {
   type SaveSections,
 } from "./brain/brain.js";
 import { QUICK_SAVE_PROMPT, SAVE_MY_DAY_PROMPT } from "./brain/prompts.js";
-import {
-  formatUndoTime,
-  NoGitError,
-  ShadowSnapshots,
-  type ChangedFile,
-} from "./safety/snapshots.js";
+import { findGitBin, formatUndoTime, NoGitError, ShadowSnapshots } from "./safety/snapshots.js";
 import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import { type ApprovalCardEvent, MuseHost, type MuseHostEvent } from "./muse/museHost.js";
@@ -63,7 +64,7 @@ type TranscriptEvent =
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
   | { type: "saved"; text: string; backup?: string; sections: SavedSection[] }
   | { type: "undo"; id: string; label: string }
-  | { type: "undoDone"; id: string; state: "undone" | "ready" };
+  | { type: "undoDone"; id: string; state: "undone" | "ready" | "gone" };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
@@ -71,6 +72,7 @@ const SESSION_LABEL_KEY = "metaBetta.sessionLabel";
 const TRANSCRIPT_KEY = "metaBetta.transcript";
 const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
 const LIVE_LABELS_KEY = "metaBetta.liveLabels";
+const UNDOS_KEY = "metaBetta.undos";
 /** Heartbeat + quick-save check, twice a minute. */
 const TICK_MS = 30_000;
 /** A quick save also fires after this many turns, whatever the clock says. */
@@ -91,13 +93,6 @@ interface SaveRun {
   stopped: boolean;
   cancelled: boolean;
   label: string;
-}
-
-interface UndoTarget {
-  before: string;
-  after: string;
-  at: number;
-  files: ChangedFile[];
 }
 
 /**
@@ -126,10 +121,14 @@ export class ChatController {
   private turnsSinceSave = 0;
   private lastSaveAt = Date.now();
   private pendingBefore: { sha: string; at: number; excluded: string[] } | undefined;
-  private undos = new Map<string, UndoTarget>();
+  private undos = new Map<string, StoredUndo>();
   private undoCounter = 0;
+  private anchorHigh = 0;
+  private replaying = false;
+  private replayer: UndoReplayer | undefined;
   private gitNoticeShown = false;
-  private shadowCache: { folder: string; shadow: ShadowSnapshots } | undefined;
+  private gitBinCache: string | undefined;
+  private shadowCache: { folder: string; bin: string; shadow: ShadowSnapshots } | undefined;
   private readonly tickTimer: ReturnType<typeof setInterval>;
   private approvalResolvers = new Map<string, (choiceId: string | undefined) => void>();
   private readonly createHostShared = singleFlight((folder: vscode.WorkspaceFolder) =>
@@ -548,8 +547,15 @@ export class ChatController {
       return;
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
-    const shadow = folder ? this.shadowFor(folder) : undefined;
-    if (!folder || !shadow) {
+    let shadow: ShadowSnapshots | undefined;
+    try {
+      shadow = folder ? await this.shadowFor(folder) : undefined;
+    } catch (error) {
+      this.snapshotFailed(error, "Couldn't undo that.");
+      this.recordAndBroadcast({ type: "undoDone", id, state: "ready" });
+      return;
+    }
+    if (!shadow) {
       this.recordAndBroadcast({ type: "notice", kind: "info", text: "Couldn't undo that." });
       this.recordAndBroadcast({ type: "undoDone", id, state: "ready" });
       return;
@@ -559,7 +565,7 @@ export class ChatController {
       const [beforeKept, afterKept] = await Promise.all([shadow.has(target.before), shadow.has(target.after)]);
       if (!beforeKept || !afterKept) {
         this.recordAndBroadcast({ type: "notice", kind: "info", text: "That change is too old to undo." });
-        this.recordAndBroadcast({ type: "undoDone", id, state: "undone" });
+        this.recordAndBroadcast({ type: "undoDone", id, state: "gone" });
         return;
       }
       changed = await shadow.changedSince(target.files, target.after);
@@ -587,6 +593,8 @@ export class ChatController {
     }
     try {
       const { restored, failed } = await shadow.restore(target.files, target.before);
+      target.undone = true;
+      this.persistUndos();
       if (restored.length > 0) {
         this.recordAndBroadcast({
           type: "notice",
@@ -604,27 +612,81 @@ export class ChatController {
     }
   }
 
-  private shadowFor(folder: vscode.WorkspaceFolder): ShadowSnapshots | undefined {
+  /** Re-emit one stored Undo button (reload/resume), then check its state. */
+  private emitReplayedUndo(id: string): void {
+    const target = this.undos.get(id);
+    if (!target) {
+      return;
+    }
+    this.recordAndBroadcast({ type: "undo", id, label: `↩ Undo that (${countFiles(target.files.length)})` });
+    void this.refreshUndoState(id);
+  }
+
+  private async refreshUndoState(id: string): Promise<void> {
+    const target = this.undos.get(id);
+    if (!target) {
+      return;
+    }
+    if (target.undone) {
+      this.recordAndBroadcast({ type: "undoDone", id, state: "undone" });
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    let shadow: ShadowSnapshots | undefined;
+    try {
+      shadow = folder ? await this.shadowFor(folder) : undefined;
+    } catch {
+      return; // No git: leave the button; clicking explains.
+    }
+    if (!shadow) {
+      return;
+    }
+    try {
+      const kept = (await shadow.has(target.before)) && (await shadow.has(target.after));
+      if (!kept) {
+        this.recordAndBroadcast({ type: "undoDone", id, state: "gone" });
+      }
+    } catch {
+      // Leave the button; clicking reports properly.
+    }
+  }
+
+  private async shadowFor(folder: vscode.WorkspaceFolder): Promise<ShadowSnapshots | undefined> {
     if (!this.storageDir) {
       return undefined;
     }
-    if (this.shadowCache?.folder !== folder.uri.fsPath) {
-      this.shadowCache = {
-        folder: folder.uri.fsPath,
-        shadow: new ShadowSnapshots(folder.uri.fsPath, path.join(this.storageDir, "shadow.git")),
-      };
+    const bin = await this.resolveGitBin();
+    const cached = this.shadowCache;
+    if (cached && cached.folder === folder.uri.fsPath && cached.bin === bin) {
+      return cached.shadow;
     }
-    return this.shadowCache.shadow;
+    const shadow = new ShadowSnapshots(folder.uri.fsPath, path.join(this.storageDir, "shadow.git"), {
+      gitBin: bin,
+    });
+    this.shadowCache = { folder: folder.uri.fsPath, bin, shadow };
+    return shadow;
+  }
+
+  /** The git binary, cached once found (a miss retries next turn). */
+  private async resolveGitBin(): Promise<string> {
+    if (!this.gitBinCache) {
+      const configured = vscode.workspace.getConfiguration("git").get<unknown>("path");
+      const settingPaths = (Array.isArray(configured) ? configured : [configured]).filter(
+        (entry): entry is string => typeof entry === "string" && entry.trim() !== "",
+      );
+      this.gitBinCache = await findGitBin({ settingPaths, extensionPath: readBundledGitPath() });
+    }
+    return this.gitBinCache;
   }
 
   private async takeBeforeSnapshot(
     folder: vscode.WorkspaceFolder,
   ): Promise<{ sha: string; at: number; excluded: string[] } | undefined> {
-    const shadow = this.shadowFor(folder);
-    if (!shadow) {
-      return undefined;
-    }
     try {
+      const shadow = await this.shadowFor(folder);
+      if (!shadow) {
+        return undefined;
+      }
       const snapshot = await shadow.snapshot("before turn");
       return { sha: snapshot.sha, at: Date.now(), excluded: snapshot.excluded };
     } catch (error) {
@@ -641,11 +703,14 @@ export class ChatController {
       return;
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
-    const shadow = folder ? this.shadowFor(folder) : undefined;
-    if (!folder || !shadow) {
+    if (!folder) {
       return;
     }
     try {
+      const shadow = await this.shadowFor(folder);
+      if (!shadow) {
+        return;
+      }
       const after = await shadow.snapshot("after turn");
       const files = await shadow.diffFiles(before.sha, after.sha, before.excluded);
       if (files.length === 0) {
@@ -653,7 +718,23 @@ export class ChatController {
       }
       this.undoCounter += 1;
       const id = `undo-${this.undoCounter}`;
-      this.undos.set(id, { before: before.sha, after: after.sha, at: before.at, files });
+      // Past the reloaded high-water mark, so a suffix replay (whose user
+      // count restarts small) can't reuse an anchor.
+      const anchor = Math.max(
+        this.history.filter((entry) => entry.type === "user").length,
+        this.anchorHigh + 1,
+      );
+      this.anchorHigh = anchor;
+      this.undos.set(id, {
+        id,
+        before: before.sha,
+        after: after.sha,
+        at: before.at,
+        files,
+        anchor,
+        undone: false,
+      });
+      this.persistUndos();
       this.recordAndBroadcast({ type: "undo", id, label: `↩ Undo that (${countFiles(files.length)})` });
     } catch (error) {
       this.snapshotFailed(error);
@@ -662,6 +743,7 @@ export class ChatController {
 
   private snapshotFailed(error: unknown, fallback = "Couldn't take a snapshot, so this reply has no Undo."): void {
     if (error instanceof NoGitError) {
+      this.gitBinCache = undefined;
       if (!this.gitNoticeShown) {
         this.gitNoticeShown = true;
         this.recordAndBroadcast({
@@ -717,6 +799,9 @@ export class ChatController {
     this.history = [];
     this.storeSet(TRANSCRIPT_KEY, undefined);
     this.storeSet(LAST_MESSAGE_KEY, undefined);
+    // Fresh session: old anchors point at replies that no longer exist.
+    this.undos.clear();
+    this.storeSet(UNDOS_KEY, undefined);
     this.forceCatchUp = true;
     this.running = false;
     this.lastStatus = "";
@@ -777,28 +862,53 @@ export class ChatController {
 
   private async doPrepare(): Promise<void> {
     try {
+      const loaded = cleanUndos(this.storage.get<unknown>(UNDOS_KEY));
+      this.undos = new Map(loaded.map((undo) => [undo.id, undo]));
+      // New ids and anchors must not collide with reloaded ones.
+      for (const undo of loaded) {
+        const match = undo.id.match(/^undo-(\d+)$/);
+        if (match) {
+          this.undoCounter = Math.max(this.undoCounter, Number.parseInt(match[1] ?? "0", 10));
+        }
+        this.anchorHigh = Math.max(this.anchorHigh, undo.anchor);
+      }
       const folder = vscode.workspace.workspaceFolders?.[0];
       const savedId = this.storage.get<string>(SESSION_ID_KEY);
       if (!folder || !savedId?.trim()) {
         return;
       }
       const host = await this.ensureHost(folder);
-      let shown = 0;
+      this.replaying = true;
+      this.replayer = new UndoReplayer([...this.undos.values()]);
       try {
-        shown = await host.prepare(folder.uri.fsPath);
-      } catch {
-        // Leave the panel usable; send() surfaces startup problems properly.
-        shown = 0;
-      }
-      if (shown === 0) {
-        const stored = cleanTranscript(this.storage.get<unknown>(TRANSCRIPT_KEY));
-        stored.forEach((entry, index) => {
-          this.recordAndBroadcast(
-            entry.role === "user"
-              ? { type: "user", text: entry.text }
-              : { type: "assistant", id: `stored-${index}`, text: entry.text },
-          );
-        });
+        let shown = 0;
+        try {
+          shown = await host.prepare(folder.uri.fsPath);
+        } catch {
+          // Leave the panel usable; send() surfaces startup problems properly.
+          shown = 0;
+        }
+        if (shown === 0) {
+          const stored = cleanTranscript(this.storage.get<unknown>(TRANSCRIPT_KEY));
+          stored.forEach((entry, index) => {
+            if (entry.role === "undo" && entry.id) {
+              this.emitReplayedUndo(entry.id);
+            } else {
+              this.recordAndBroadcast(
+                entry.role === "user"
+                  ? { type: "user", text: entry.text }
+                  : { type: "assistant", id: `stored-${index}`, text: entry.text },
+              );
+            }
+          });
+        } else {
+          for (const id of this.replayer.finish()) {
+            this.emitReplayedUndo(id);
+          }
+        }
+      } finally {
+        this.replaying = false;
+        this.replayer = undefined;
       }
     } finally {
       this.prepared = true;
@@ -922,6 +1032,8 @@ export class ChatController {
           this.storeSet(SESSION_ID_KEY, undefined);
           this.storeSet(TRANSCRIPT_KEY, undefined);
           this.storeSet(LAST_MESSAGE_KEY, undefined);
+          this.undos.clear();
+          this.storeSet(UNDOS_KEY, undefined);
         },
       },
     });
@@ -933,6 +1045,10 @@ export class ChatController {
 
   private persistTranscript(): void {
     this.storeSet(TRANSCRIPT_KEY, buildTranscript(this.history));
+  }
+
+  private persistUndos(): void {
+    this.storeSet(UNDOS_KEY, [...this.undos.values()].slice(-100));
   }
 
   private onHostEvent(event: MuseHostEvent): void {
@@ -970,10 +1086,20 @@ export class ChatController {
       this.broadcast(event);
       return;
     }
+    if (this.replaying && this.replayer && event.type === "user") {
+      for (const id of this.replayer.userArrived()) {
+        this.emitReplayedUndo(id);
+      }
+    }
     if (event.type === "assistant" && this.running) {
       this.liveReplySeen = true;
     }
     this.recordAndBroadcast(event);
+    if (this.replaying && this.replayer && event.type === "assistant") {
+      for (const id of this.replayer.assistantArrived()) {
+        this.emitReplayedUndo(id);
+      }
+    }
   }
 
   /**
@@ -1111,6 +1237,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** "1 file" or "3 files". */
 function countFiles(count: number): string {
   return count === 1 ? "1 file" : `${count} files`;
+}
+
+/**
+ * The git binary VS Code's own Git extension found, if it's already active.
+ * Read only — activating it just to ask would spin up a repo scan.
+ */
+function readBundledGitPath(): string | undefined {
+  try {
+    const api = vscode.extensions.getExtension("vscode.git")?.exports?.getAPI?.(1);
+    const found = api?.git?.path;
+    return typeof found === "string" && found.trim() !== "" ? found : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Save sections in file order, with card titles, for the Saved card. */

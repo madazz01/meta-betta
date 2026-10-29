@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildTranscript, cleanTranscript, decideSession } from "../lib/session.js";
+import {
+  buildTranscript,
+  cleanTranscript,
+  cleanUndos,
+  decideSession,
+  UndoReplayer,
+} from "../lib/session.js";
 
 describe("decideSession", () => {
   it("starts fresh with no saved id", () => {
@@ -56,5 +62,101 @@ describe("cleanTranscript", () => {
       cleanTranscript([{ role: "user", text: "hi" }, null, { role: "tool", text: "x" }, { role: "user" }]),
       [{ role: "user", text: "hi" }],
     );
+  });
+
+  it("keeps undo buttons by id, drops id-less ones", () => {
+    assert.deepEqual(cleanTranscript([{ role: "undo", text: "", id: "undo-1" }]), [
+      { role: "undo", text: "", id: "undo-1" },
+    ]);
+    assert.deepEqual(cleanTranscript([{ role: "undo", text: "" }]), []);
+    assert.deepEqual(cleanTranscript([{ role: "undoDone", text: "" }]), []);
+  });
+});
+
+describe("undo transcript round trip", () => {
+  it("keeps undo events inline, drops undoDone", () => {
+    assert.deepEqual(
+      buildTranscript([
+        { type: "user", text: "hi" },
+        { type: "assistant", text: "hello", id: "a1" },
+        { type: "undo", id: "undo-1" },
+        { type: "undoDone", id: "undo-1" },
+        { type: "thinking", text: "hmm" },
+      ]),
+      [
+        { role: "user", text: "hi" },
+        { role: "assistant", text: "hello" },
+        { role: "undo", text: "", id: "undo-1" },
+      ],
+    );
+  });
+});
+
+describe("cleanUndos", () => {
+  const valid = {
+    id: "undo-1",
+    before: "aaa",
+    after: "bbb",
+    at: 1000,
+    files: [{ path: "a.txt", change: "modified" }],
+    anchor: 2,
+    undone: false,
+  };
+
+  it("accepts well-formed targets", () => {
+    assert.deepEqual(cleanUndos([valid]), [valid]);
+  });
+
+  it("drops junk and caps the list", () => {
+    assert.deepEqual(cleanUndos(undefined), []);
+    assert.deepEqual(
+      cleanUndos([valid, null, { ...valid, id: "" }, { ...valid, files: [] }, { ...valid, files: [{ path: "x", change: "moved" }] }, { ...valid, undone: "yes" }]),
+      [valid],
+    );
+    const many = Array.from({ length: 120 }, (_, index) => ({ ...valid, id: `undo-${index}` }));
+    const kept = cleanUndos(many);
+    assert.equal(kept.length, 100);
+    assert.equal(kept[0]?.id, "undo-20");
+  });
+});
+
+describe("UndoReplayer", () => {
+  const undos = [
+    { id: "undo-1", anchor: 1 },
+    { id: "undo-2", anchor: 3 },
+    { id: "undo-99", anchor: 99 },
+  ];
+
+  it("lands each button under its own reply", () => {
+    const replay = new UndoReplayer(undos);
+    assert.deepEqual(replay.userArrived(), []); // user 1
+    assert.deepEqual(replay.assistantArrived(), ["undo-1"]);
+    assert.deepEqual(replay.userArrived(), []); // user 2, no undo
+    assert.deepEqual(replay.assistantArrived(), []);
+    assert.deepEqual(replay.userArrived(), []); // user 3
+    assert.deepEqual(replay.assistantArrived(), ["undo-2"]);
+    assert.deepEqual(replay.finish(), []); // anchor 99 never arrived: dropped
+  });
+
+  it("a trailing reply keeps its button at the end", () => {
+    const replay = new UndoReplayer([{ id: "undo-1", anchor: 1 }]);
+    assert.deepEqual(replay.userArrived(), []);
+    assert.deepEqual(replay.finish(), ["undo-1"]);
+  });
+
+  it("a reply with no assistant text still gets its button", () => {
+    const replay = new UndoReplayer([{ id: "undo-1", anchor: 1 }]);
+    assert.deepEqual(replay.userArrived(), []);
+    assert.deepEqual(replay.userArrived(), ["undo-1"]); // next user flushes it first
+    assert.deepEqual(replay.assistantArrived(), []);
+    assert.deepEqual(replay.finish(), []);
+  });
+
+  it("stale buttons never fire twice", () => {
+    const replay = new UndoReplayer([{ id: "undo-1", anchor: 1 }]);
+    assert.deepEqual(replay.userArrived(), []);
+    assert.deepEqual(replay.assistantArrived(), ["undo-1"]);
+    assert.deepEqual(replay.assistantArrived(), []);
+    assert.deepEqual(replay.finish(), []);
   });
 });
