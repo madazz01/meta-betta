@@ -387,6 +387,8 @@
     if (isNew && cardNeedsAnswer(message)) {
       maybeAttentionDing();
     }
+    // Progress re-renders the card; keep Show details open while it streams.
+    const detailsOpen = card.querySelector(".card-details")?.open === true;
     card.replaceChildren();
     const title = document.createElement("div");
     title.className = "card-title";
@@ -396,6 +398,19 @@
     body.innerHTML = renderReply(message.body);
     card.appendChild(title);
     card.appendChild(body);
+    const detailsSpec = message.details;
+    if (detailsSpec && typeof detailsSpec.label === "string" && typeof detailsSpec.text === "string") {
+      const details = document.createElement("details");
+      details.className = "card-details";
+      details.open = detailsOpen;
+      const summary = document.createElement("summary");
+      summary.textContent = detailsSpec.label;
+      const pre = document.createElement("pre");
+      pre.textContent = detailsSpec.text;
+      details.appendChild(summary);
+      details.appendChild(pre);
+      card.appendChild(details);
+    }
     if (Array.isArray(message.buttons) && message.buttons.length > 0) {
       const row = document.createElement("div");
       row.className = "card-buttons";
@@ -420,9 +435,11 @@
       const formEl = document.createElement("form");
       formEl.className = "card-input";
       const field = document.createElement("input");
-      field.type = "text";
+      field.type = spec.secret === true ? "password" : "text";
       field.placeholder = spec.placeholder;
       field.setAttribute("aria-label", spec.placeholder);
+      field.setAttribute("autocomplete", "off");
+      field.spellcheck = false;
       const go = document.createElement("button");
       go.type = "submit";
       go.className = "btn";

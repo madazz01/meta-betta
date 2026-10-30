@@ -7,6 +7,7 @@ import {
   chainNotifications,
   MuseHost,
   serveArgs,
+  serveEnv,
   type ApprovalAnswer,
   type PickerEvent,
   type HostClient,
@@ -14,6 +15,7 @@ import {
   type HostSession,
   type HostTurn,
   type MuseHostEvent,
+  type SetupNeededInfo,
 } from "../muse/museHost.js";
 
 describe("MuseHost", () => {
@@ -36,6 +38,32 @@ describe("MuseHost", () => {
     assert.ok(notice && notice.type === "notice");
     assert.match(notice.text, /can't find Muse Code/);
     assert.equal(notice.copy, "irm https://dev.meta.ai/install.ps1 | iex");
+    assert.ok(events.some((event) => event.type === "turn" && event.state === "done"));
+    assert.ok(events.some((event) => event.type === "status" && event.text === "Ready"));
+  });
+
+  it("offers the setup again instead of notices when asked", async () => {
+    const events: MuseHostEvent[] = [];
+    const setups: SetupNeededInfo[] = [];
+    const host = new MuseHost({
+      museBin: "meta-betta-definitely-not-a-real-binary",
+      version: "0.0.1",
+      trustWorkspace: false,
+      onSetupNeeded: (info) => {
+        setups.push(info);
+      },
+      emit: (event) => {
+        events.push(event);
+      },
+      askApproval: () => Promise.resolve(undefined),
+    });
+    await host.send("hello", process.cwd());
+    await host.dispose();
+
+    assert.equal(setups.length, 1);
+    assert.equal(setups[0]?.problem, "missing");
+    assert.ok((setups[0]?.reason ?? "").length > 0);
+    assert.ok(!events.some((event) => event.type === "notice"));
     assert.ok(events.some((event) => event.type === "turn" && event.state === "done"));
     assert.ok(events.some((event) => event.type === "status" && event.text === "Ready"));
   });
@@ -317,6 +345,27 @@ describe("serveArgs", () => {
     assert.deepEqual(serveArgs("win32", true, false), ["serve", "--trust-workspace"]);
     assert.deepEqual(serveArgs("darwin", true, true), ["serve", "--trust-workspace"]);
     assert.deepEqual(serveArgs("linux", false, true), ["serve"]);
+  });
+});
+
+describe("serveEnv", () => {
+  it("leaves the env alone without a key", () => {
+    assert.equal(serveEnv(undefined), undefined);
+    assert.equal(serveEnv("   "), undefined);
+  });
+
+  it("adds META_API_KEY over a copy of the process env", () => {
+    const before = process.env.META_API_KEY;
+    const env = serveEnv("  test-key-1  ");
+    assert.ok(env);
+    assert.equal(env.META_API_KEY, "test-key-1");
+    assert.notEqual(env, process.env);
+    for (const key of Object.keys(process.env)) {
+      if (key !== "META_API_KEY") {
+        assert.equal(env[key], process.env[key]);
+      }
+    }
+    assert.equal(process.env.META_API_KEY, before);
   });
 });
 

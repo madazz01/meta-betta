@@ -36,6 +36,7 @@ interface ExtCtx {
   extensionUri: vscode.Uri;
   storage: vscode.Memento;
   globalState: vscode.Memento;
+  secrets: vscode.SecretStorage;
   storageDir: string | undefined;
   log: (message: string) => void;
   brainChanged: (files: string[]) => void;
@@ -64,6 +65,7 @@ export function activate(context: vscode.ExtensionContext): void {
     extensionUri: context.extensionUri,
     storage: context.workspaceState,
     globalState: context.globalState,
+    secrets: context.secrets,
     storageDir: context.storageUri?.fsPath,
     log: (message) => output.appendLine(`[${new Date().toLocaleTimeString("en-GB")}] ${message}`),
     brainChanged: (files) => {
@@ -125,6 +127,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("metaBetta.saveMyDay", () => {
       void activeTab().controller.saveMyDay();
+    }),
+    vscode.commands.registerCommand("metaBetta.forgetApiKey", () => {
+      void activeTab().controller.forgetApiKey();
     }),
     vscode.workspace.onDidGrantWorkspaceTrust(() => {
       for (const tab of allTabs()) {
@@ -203,6 +208,7 @@ function createController(uid: string, seed?: TabSeed): ChatController {
       stopTab: (other) => stopTab(other),
       onUsage: () => refreshUsage(),
     },
+    context.secrets,
   );
 }
 

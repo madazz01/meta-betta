@@ -55,7 +55,7 @@ import {
 } from "../lib/approvals.js";
 import { historyEvent, isSandboxBugFailure, reasoningText, toolRowText } from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
-import { classifySpawnError, parseSandboxReady, shortReason } from "../lib/startup.js";
+import { classifySpawnError, parseSandboxReady, shortReason, type SpawnProblem } from "../lib/startup.js";
 import type { SessionUsageTotals } from "../lib/usage.js";
 
 export interface PickerChoiceCard {
@@ -101,11 +101,24 @@ export type MuseHostEvent =
   | { type: "model"; modelId: string }
   | { type: "effort"; level: EffortLevel };
 
+/** Why the host wants the first-run setup to run again. */
+export interface SetupNeededInfo {
+  reason: string;
+  problem: SpawnProblem;
+}
+
 export interface MuseHostOptions {
   museBin: string;
   version: string;
   /** Pass --trust-workspace so Muse reads the workspace AGENTS.md. */
   trustWorkspace: boolean;
+  /** API key from secret storage, passed to `muse serve` as META_API_KEY. */
+  apiKey?: string;
+  /**
+   * Starting failed: run the first-run setup again instead of the old
+   * notices. Unset keeps the old notices (tests, side runs).
+   */
+  onSetupNeeded?: (info: SetupNeededInfo) => void;
   emit: (event: MuseHostEvent) => void;
   /**
    * Show the approval picker and resolve with the picked choice, or undefined
@@ -990,7 +1003,10 @@ export class MuseHost {
       this.options.trustWorkspace,
       this.options.sandboxWorkaround ?? false,
     );
-    const handshake = spawnMspConnection({ command: this.options.museBin, args });
+    const env = serveEnv(this.options.apiKey);
+    const handshake = spawnMspConnection(
+      env ? { command: this.options.museBin, args, env } : { command: this.options.museBin, args },
+    );
     let client: MuseClient | undefined;
     try {
       const spawned = await handshake.initialize({
@@ -1456,6 +1472,12 @@ export class MuseHost {
       return;
     }
     const problem = classifySpawnError(error);
+    if (this.options.onSetupNeeded) {
+      this.options.onSetupNeeded({ reason: shortReason(error), problem });
+      this.emit({ type: "turn", state: "done" });
+      this.emit({ type: "status", text: "Ready" });
+      return;
+    }
     if (problem === "missing" || problem === "login") {
       this.emit({
         type: "notice",
@@ -1525,6 +1547,18 @@ export function serveArgs(platform: string, trustWorkspace: boolean, workaround:
     args.push("--disable-sandbox");
   }
   return args;
+}
+
+/**
+ * The child env with META_API_KEY added (spread over process.env: the SDK's
+ * env REPLACES the child's environment). Undefined when there is no key.
+ */
+export function serveEnv(apiKey: string | undefined): NodeJS.ProcessEnv | undefined {
+  const key = apiKey?.trim();
+  if (!key) {
+    return undefined;
+  }
+  return { ...process.env, META_API_KEY: key };
 }
 
 /**

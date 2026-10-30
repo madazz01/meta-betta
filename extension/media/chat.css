@@ -1030,6 +1030,28 @@ body.vscode-light .pill {
   margin-top: 8px;
 }
 
+.card-details {
+  margin-top: 6px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.card-details summary {
+  cursor: pointer;
+}
+
+.card-details pre {
+  margin: 6px 0 0;
+  padding: 6px;
+  border-radius: 4px;
+  background-color: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+
 .card-input {
   display: flex;
   gap: 6px;

@@ -42,6 +42,13 @@ export interface CardInputSpec {
   id: string;
   placeholder: string;
   buttonLabel: string;
+  /** Password style: dots instead of letters (the API key box). */
+  secret?: boolean;
+}
+
+export interface CardDetailsSpec {
+  label: string;
+  text: string;
 }
 
 /** One compact result card. Buttons and the input come back via handlers. */
@@ -50,6 +57,8 @@ export interface CardSpec {
   body: string;
   buttons?: CardButtonSpec[];
   input?: CardInputSpec;
+  /** A folded "Show details" block under the body. */
+  details?: CardDetailsSpec;
 }
 
 export interface CardHandlers {

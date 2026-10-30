@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
@@ -104,10 +104,18 @@ import { findGitBin, formatUndoTime, NoGitError, ShadowSnapshots } from "./safet
 import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import {
+  runFirstRun,
+  shQuote,
+  type FirstRunDeps,
+  type RunResult,
+  type RunSpec,
+} from "./setup/firstRun.js";
+import {
   type ApprovalAnswer,
   type PickerEvent,
   MuseHost,
   type MuseHostEvent,
+  type SetupNeededInfo,
 } from "./muse/museHost.js";
 import { current as lockHolder, TurnBusyError } from "./muse/turnLock.js";
 import {
@@ -177,7 +185,7 @@ type TranscriptEvent =
   | { type: "memory"; text: string; detail: string }
   | { type: "day"; label: string }
   | { type: "nudgeAnswered"; id: string; answer: "show" | "notnow" }
-  | { type: "card"; id: string; title: string; body: string; buttons?: CardSpec["buttons"]; input?: CardSpec["input"] }
+  | { type: "card"; id: string; title: string; body: string; buttons?: CardSpec["buttons"]; input?: CardSpec["input"]; details?: CardSpec["details"] }
   | { type: "cardDone"; id: string }
   | { type: "busy"; text: string }
   | { type: "busyDone" }
@@ -192,6 +200,12 @@ const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
 const LIVE_LABELS_KEY = "metaBetta.liveLabels";
 const UNDOS_KEY = "metaBetta.undos";
 const WELCOMED_KEY = "metaBetta.welcomed";
+/** SecretStorage id for the pasted API key (this machine's vault). */
+const API_KEY_SECRET = "metaBetta.apiKey";
+/** First-run "Muse is ready" cache (globalState: this machine). */
+const FIRST_RUN_READY_KEY = "metaBetta.firstRunReady";
+/** The setup test turn must answer within this. */
+const TEST_TURN_TIMEOUT_MS = 120_000;
 const GOAL_KEY = "metaBetta.goal";
 const EFFORT_KEY = "metaBetta.effort";
 const DAILY_USAGE_KEY = "metaBetta.dailyUsage";
@@ -266,6 +280,8 @@ export class ChatController {
   private shellWorkaround = false;
   private cardCounter = 0;
   private cardHandlers = new Map<string, CardHandlers>();
+  /** A "run setup again" card is already on screen; don't stack another. */
+  private setupCardOpen = false;
   private lastUsage: SessionUsageTotals | undefined;
   private lastGoal: GoalInfo | null = null;
   private lastEffort: EffortLevel = "normal";
@@ -289,6 +305,7 @@ export class ChatController {
     private readonly updateStatusBar: (text: string) => void = () => undefined,
     private readonly globalState: vscode.Memento | undefined = undefined,
     private readonly tabHost: TabHost,
+    private readonly secrets: vscode.SecretStorage | undefined = undefined,
   ) {
     this.lastGoal = cleanGoalInfo(this.storage.get<unknown>(this.tabKey(GOAL_KEY)));
     this.lastEffort = cleanEffortLevel(this.storage.get<unknown>(this.tabKey(EFFORT_KEY)));
@@ -816,6 +833,7 @@ export class ChatController {
       body: card.body,
       ...(card.buttons ? { buttons: card.buttons } : {}),
       ...(card.input ? { input: card.input } : {}),
+      ...(card.details ? { details: card.details } : {}),
     });
     return id;
   }
@@ -828,6 +846,7 @@ export class ChatController {
       body: card.body,
       ...(card.buttons ? { buttons: card.buttons } : {}),
       ...(card.input ? { input: card.input } : {}),
+      ...(card.details ? { details: card.details } : {}),
     });
   }
 
@@ -1930,6 +1949,19 @@ export class ChatController {
         void this.updateHeaderUndo();
         return;
       }
+      // First run once, in the first chat: install → connect → sandbox →
+      // test turn, then resume and the welcome carry on below.
+      if (this.tabHost.uid === MAIN_TAB_UID) {
+        const trust = await this.ensureMemory(folder);
+        this.setStatus("Setting Muse up…");
+        try {
+          await runFirstRun(this.firstRunDeps(folder, trust));
+        } finally {
+          if (!this.disposed) {
+            this.setStatus("Ready");
+          }
+        }
+      }
       const host = await this.ensureHost(folder);
       const savedId = this.loadSessionId();
       if (!savedId?.trim()) {
@@ -2012,8 +2044,17 @@ export class ChatController {
 
   private async createHostAsync(folder: vscode.WorkspaceFolder): Promise<MuseHost> {
     const trustWorkspace = await this.ensureMemory(folder);
-    this.host = this.createHost(trustWorkspace);
+    this.host = this.createHost(trustWorkspace, await this.readApiKey());
     return this.host;
+  }
+
+  /** The saved API key, if any. SecretStorage failures read as "no key". */
+  private async readApiKey(): Promise<string | undefined> {
+    try {
+      return (await this.secrets?.get(API_KEY_SECRET))?.trim() || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -2134,7 +2175,272 @@ export class ChatController {
     this.storeSet(LIVE_LABELS_KEY, live);
   }
 
-  private createHost(trustWorkspace: boolean): MuseHost {
+  /**
+   * The first-run checklist's world: real processes, secrets, cards and a
+   * throwaway test turn. The key travels to child envs, never to cards.
+   */
+  private firstRunDeps(folder: vscode.WorkspaceFolder, trustWorkspace: boolean): FirstRunDeps {
+    const config = vscode.workspace.getConfiguration("metaBetta");
+    const museDir = path.join(process.env.LOCALAPPDATA ?? "", "Programs", "muse");
+    return {
+      platform: process.platform,
+      workaroundOn: config.get<boolean>("windowsSandboxWorkaround", true),
+      settingBin: config.get<string>("museBin", ""),
+      museDir,
+      dirFiles: () => {
+        try {
+          return fs.readdirSync(museDir);
+        } catch {
+          return [];
+        }
+      },
+      fileExists: (target) => {
+        try {
+          return fs.existsSync(target);
+        } catch {
+          return false;
+        }
+      },
+      pathHas: (name) => this.firstRunPathHas(name),
+      run: (spec) => this.runFirstRunProc(spec),
+      testTurn: () => this.runFirstRunTestTurn(folder, trustWorkspace),
+      secrets: {
+        get: async () => this.secrets?.get(API_KEY_SECRET),
+        set: async (value) => {
+          await this.secrets?.store(API_KEY_SECRET, value);
+        },
+        remove: async () => {
+          await this.secrets?.delete(API_KEY_SECRET);
+        },
+      },
+      store: {
+        readyCached: () => this.globalState?.get<boolean>(FIRST_RUN_READY_KEY) ?? false,
+        setReadyCached: () => {
+          void this.globalState?.update(FIRST_RUN_READY_KEY, true);
+        },
+      },
+      ui: {
+        showCard: (card, handlers) => this.showCard(card, handlers),
+        updateCard: (id, card) => this.updateCard(id, card),
+        notice: (kind, text) => this.recordAndBroadcast({ type: "notice", kind, text }),
+        openUrl: (url) => {
+          void this.openLink(url);
+        },
+      },
+      log: (message) => this.log(message),
+    };
+  }
+
+  /** `where` on Windows, `command -v` elsewhere: is this name on PATH? */
+  private async firstRunPathHas(name: string): Promise<boolean> {
+    const spec: RunSpec =
+      process.platform === "win32"
+        ? { command: "where", args: [name], label: `where ${name}`, timeoutMs: 10_000 }
+        : {
+            command: "sh",
+            args: ["-c", `command -v -- ${shQuote(name)}`],
+            label: `command -v ${name}`,
+            timeoutMs: 10_000,
+          };
+    const result = await this.runFirstRunProc(spec);
+    return result.exitCode === 0;
+  }
+
+  /**
+   * One first-run background process: hidden window, ignored stdin, capped
+   * output. Always resolves; spawn failures come back as exit code 1.
+   */
+  private runFirstRunProc(spec: RunSpec): Promise<RunResult> {
+    return new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = (exitCode: number): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        resolve({ exitCode, stdout, stderr, timedOut });
+      };
+      const grow = (current: string, text: string): string => {
+        const next = current + text;
+        return next.length > 65_536 ? next.slice(next.length - 65_536) : next;
+      };
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn(spec.command, spec.args, {
+          stdio: ["ignore", "pipe", "pipe"],
+          ...(spec.env ? { env: spec.env } : {}),
+          windowsHide: true,
+        });
+      } catch {
+        done(1);
+        return;
+      }
+      if (spec.timeoutMs) {
+        timer = setTimeout(() => {
+          timedOut = true;
+          child.kill();
+          done(1);
+        }, spec.timeoutMs);
+        timer.unref?.();
+      }
+      child.stdout?.on("data", (chunk) => {
+        const text = String(chunk);
+        stdout = grow(stdout, text);
+        spec.onChunk?.(text);
+      });
+      child.stderr?.on("data", (chunk) => {
+        const text = String(chunk);
+        stderr = grow(stderr, text);
+        spec.onChunk?.(text);
+      });
+      child.on("error", () => done(1));
+      child.on("close", (code) => done(code ?? 1));
+    });
+  }
+
+  /**
+   * The setup proof: a throwaway host asks for "ready" with no panel
+   * attached, so the chat stays clean whatever comes back.
+   */
+  private async runFirstRunTestTurn(
+    folder: vscode.WorkspaceFolder,
+    trustWorkspace: boolean,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const config = vscode.workspace.getConfiguration("metaBetta");
+    const key = await this.readApiKey();
+    let assistant = "";
+    let failure: string | undefined;
+    const host = new MuseHost({
+      museBin: findMuseBin(config.get<string>("museBin", "")),
+      version: readVersion(this.extensionUri),
+      trustWorkspace,
+      apiKey: key,
+      emit: (event) => {
+        if (event.type === "assistant") {
+          assistant += event.text;
+        } else if (event.type === "notice" && event.kind === "error" && !failure) {
+          failure = event.text;
+        }
+      },
+      askApproval: () => Promise.resolve(undefined),
+      log: (message) => this.log(message),
+      sandboxWorkaround: config.get<boolean>("windowsSandboxWorkaround", true),
+      turnOwner: `firstrun-${Date.now().toString(36)}`,
+    });
+    const send = host.send("Reply with just: ready", folder.uri.fsPath);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      send.then(
+        () => "sent" as const,
+        (error: unknown) => ({ error }) as const,
+      ),
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), TEST_TURN_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    if (outcome === "timeout") {
+      this.log("First run: the test turn timed out");
+      await host.dispose().catch(() => undefined);
+      send.catch(() => undefined);
+      return { ok: false, reason: "it took too long" };
+    }
+    await host.dispose().catch(() => undefined);
+    if (typeof outcome !== "string") {
+      if (outcome.error instanceof TurnBusyError) {
+        return { ok: false, reason: "Muse is busy in another chat" };
+      }
+      return { ok: false, reason: shortReason(outcome.error) };
+    }
+    if (failure) {
+      return { ok: false, reason: failure };
+    }
+    if (!assistant.trim()) {
+      return { ok: false, reason: "the reply came back empty" };
+    }
+    return { ok: true };
+  }
+
+  /** Starting failed later on: clear "ready" and offer the setup again. */
+  private setupNeeded(info: SetupNeededInfo): void {
+    void this.globalState?.update(FIRST_RUN_READY_KEY, undefined);
+    if (this.disposed || this.setupCardOpen) {
+      return;
+    }
+    if (!vscode.workspace.workspaceFolders?.[0]) {
+      return;
+    }
+    this.setupCardOpen = true;
+    const body =
+      info.problem === "missing"
+        ? "I can't find Muse Code."
+        : info.problem === "login"
+          ? "Muse isn't connected."
+          : `Starting Muse didn't work (${info.reason}).`;
+    this.showCard(
+      { title: "Muse needs setting up again", body, buttons: [{ id: "setup", label: "Run setup" }] },
+      {
+        onButton: (button) => {
+          if (button !== "setup" || this.disposed) {
+            return;
+          }
+          const folder = vscode.workspace.workspaceFolders?.[0];
+          if (!folder) {
+            return;
+          }
+          this.setupCardOpen = false;
+          void this.rerunSetup(folder);
+        },
+      },
+    );
+  }
+
+  private async rerunSetup(folder: vscode.WorkspaceFolder): Promise<void> {
+    // Fixed from another chat while the card sat here: nothing to do.
+    if (this.globalState?.get<boolean>(FIRST_RUN_READY_KEY)) {
+      return;
+    }
+    const trust = await this.ensureMemory(folder);
+    this.setStatus("Setting Muse up…");
+    try {
+      await runFirstRun(this.firstRunDeps(folder, trust));
+    } finally {
+      if (!this.disposed) {
+        this.setStatus("Ready");
+      }
+    }
+  }
+
+  /** Forget the saved API key. The host is rebuilt keyless on next send. */
+  public async forgetApiKey(): Promise<void> {
+    try {
+      await this.secrets?.delete(API_KEY_SECRET);
+    } catch {
+      // Missing is fine; the key is gone either way.
+    }
+    if (this.host) {
+      await this.host.dispose().catch(() => undefined);
+      this.host = undefined;
+    }
+    void this.globalState?.update(FIRST_RUN_READY_KEY, undefined);
+    this.recordAndBroadcast({
+      type: "notice",
+      kind: "info",
+      text: "Forgotten — your API key is gone from this machine.",
+    });
+  }
+
+  private createHost(trustWorkspace: boolean, apiKey?: string): MuseHost {
     const config = vscode.workspace.getConfiguration("metaBetta");
     const workaround = config.get<boolean>("windowsSandboxWorkaround", true);
     this.shellWorkaround = process.platform === "win32" && workaround;
@@ -2142,6 +2448,8 @@ export class ChatController {
       museBin: findMuseBin(config.get<string>("museBin", "")),
       version: readVersion(this.extensionUri),
       trustWorkspace,
+      apiKey,
+      onSetupNeeded: (info) => this.setupNeeded(info),
       emit: (event) => this.onHostEvent(event),
       askApproval: (card) => this.askApproval(card),
       log: (message) => this.log(message),

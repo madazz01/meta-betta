@@ -18,7 +18,8 @@
     "onView:metaBetta.usage",
     "onView:metaBetta.sessions",
     "onCommand:metaBetta.open",
-    "onCommand:metaBetta.saveMyDay"
+    "onCommand:metaBetta.saveMyDay",
+    "onCommand:metaBetta.forgetApiKey"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -37,6 +38,10 @@
       {
         "command": "metaBetta.saveMyDay",
         "title": "Meta Betta: Save my day"
+      },
+      {
+        "command": "metaBetta.forgetApiKey",
+        "title": "Meta Betta: Forget my API key"
       }
     ],
     "viewsContainers": {
