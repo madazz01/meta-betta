@@ -48,6 +48,7 @@ import {
   describeFileAccess,
   describeStage,
   findStageChoice,
+  isFreeRead,
   isReadOnlyStage,
   isRejectChoice,
   isSinkStage,
@@ -1273,6 +1274,14 @@ export class MuseHost {
     const stages = shell ? (request.subject.stages ?? []) : [];
     const stage = shell ? currentStage(request.subject.stages, sourceIndex) : undefined;
     const argv = stage?.argv ?? [];
+    if (this.approvalAllFor !== undefined && this.approvalAllFor === this.session?.sessionId) {
+      // All: run everything without asking. The server normally asks nothing
+      // in allowAll; this covers anything it still sends.
+      const all = findStageChoice(request.availableChoices, "once");
+      if (all !== undefined) {
+        return this.answerQuietly(approvalId, all);
+      }
+    }
     this.sweepPending();
     const pending = this.pendingFor(approvalId);
 
@@ -1294,6 +1303,16 @@ export class MuseHost {
         if (!isSinkStage(argv)) {
           pending.lookedAt.push(stageLabel(argv));
         }
+        this.armQuietFlush(approvalId, pending);
+        return this.answerQuietly(approvalId, once);
+      }
+    } else if (isFreeRead(request.subject, this.workspaceRoot)) {
+      // Reads inside the project never ask, in any mode: they ride the
+      // quiet row ("Looked at: brain/me.md") like read-only shell stages.
+      const once = findStageChoice(request.availableChoices, "once");
+      const target = request.subject.path;
+      if (once !== undefined && typeof target === "string") {
+        pending.lookedAt.push(target);
         this.armQuietFlush(approvalId, pending);
         return this.answerQuietly(approvalId, once);
       }

@@ -16,6 +16,7 @@ import {
   describeFileAccess,
   describeStage,
   findStageChoice,
+  isFreeRead,
   isReadOnlyStage,
   isRejectChoice,
   isSinkStage,
@@ -575,6 +576,25 @@ describe("autoAllowFile", () => {
     assert.equal(autoAllowFile("..\\x.txt", "C:\\ws"), false);
     assert.equal(autoAllowFile("$env:x", "C:\\ws"), false);
     assert.equal(autoAllowFile("a.txt", ""), false);
+  });
+});
+
+describe("isFreeRead", () => {
+  it("frees inside file reads, nothing else", () => {
+    assert.equal(isFreeRead({ kind: "fileAccess", access: "read", path: "brain/me.md" }, "C:\\ws"), true);
+    assert.equal(isFreeRead({ kind: "fileAccess", access: "read", path: "C:\\ws\\a.txt" }, "C:\\ws"), true);
+    assert.equal(isFreeRead({ kind: "fileAccess", access: "read", path: "..\\x.txt" }, "C:\\ws"), false);
+    assert.equal(
+      isFreeRead({ kind: "fileAccess", access: "read", path: "C:\\Windows\\x.txt" }, "C:\\ws"),
+      false,
+    );
+    assert.equal(isFreeRead({ kind: "fileAccess", access: "write", path: "a.txt" }, "C:\\ws"), false);
+    assert.equal(isFreeRead({ kind: "fileAccess", access: "read", path: "$HOME\\x" }, "C:\\ws"), false);
+    assert.equal(isFreeRead({ kind: "fileAccess", access: "read" }, "C:\\ws"), false);
+    assert.equal(isFreeRead({ kind: "network" }, "C:\\ws"), false);
+    assert.equal(isFreeRead({ kind: "process" }, "C:\\ws"), false);
+    assert.equal(isFreeRead({ kind: "tool" }, "C:\\ws"), false);
+    assert.equal(isFreeRead({ kind: "fileAccess", access: "read", path: "a.txt" }, ""), false);
   });
 });
 

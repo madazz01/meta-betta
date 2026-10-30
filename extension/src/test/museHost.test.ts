@@ -1113,6 +1113,101 @@ describe("approval allow-all", () => {
   });
 });
 
+function fileRequest(
+  approvalId: string,
+  subject: { kind: string; access?: string; path?: string },
+): ApprovalRequestParams {
+  return {
+    approvalId,
+    availableChoices: SHELL_CHOICES,
+    currentRequirementId: { approvalId, sourceIndex: 0 },
+    subject,
+    toolName: "read",
+    rawArgs: "{}",
+  } as unknown as ApprovalRequestParams;
+}
+
+describe("free reads", () => {
+  it("auto-answers inside file reads in Ask mode, quietly", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(
+      await fake.decide(
+        fileRequest("read-1", { kind: "fileAccess", access: "read", path: "brain/me.md" }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 0);
+    await fake.host.send("hi", process.cwd());
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: brain/me.md"));
+    await fake.host.dispose();
+  });
+
+  it("still asks for outside reads and inside writes in Ask mode", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(
+      await fake.decide(
+        fileRequest("read-2", { kind: "fileAccess", access: "read", path: "..\\outside.txt" }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.deepEqual(
+      await fake.decide(
+        fileRequest("read-3", { kind: "fileAccess", access: "write", path: "todo.txt" }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 2);
+    await fake.host.dispose();
+  });
+
+  it("auto-answers inside file reads in Auto mode too", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" }, { approvalMode: "auto" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(
+      await fake.decide(
+        fileRequest("read-4", { kind: "fileAccess", access: "read", path: "brain/me.md" }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 0);
+    await fake.host.send("hi", process.cwd());
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: brain/me.md"));
+    await fake.host.dispose();
+  });
+
+  it("still asks for outside reads in Auto mode", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" }, { approvalMode: "auto" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(
+      await fake.decide(
+        fileRequest("read-5", { kind: "fileAccess", access: "read", path: "..\\outside.txt" }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 1);
+    await fake.host.dispose();
+  });
+
+  it("auto-answers everything in All mode, even outside reads", async () => {
+    const fake = fakeApprovalHost(
+      { choiceId: "allow_once" },
+      { commands: { "session/setApprovalMode": { effectiveMode: { mode: "allowAll" } } } },
+    );
+    await fake.host.prepare(process.cwd());
+    await fake.host.setApprovalAll(process.cwd());
+    assert.deepEqual(
+      await fake.decide(
+        fileRequest("read-6", { kind: "fileAccess", access: "read", path: "..\\outside.txt" }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 0);
+    await fake.host.dispose();
+  });
+});
+
 interface ApprovalFake {
   host: MuseHost;
   events: MuseHostEvent[];
@@ -1123,7 +1218,7 @@ interface ApprovalFake {
 /** Captures the registered approval handler plus the picker it builds. */
 function fakeApprovalHost(
   answer: ApprovalAnswer | undefined,
-  options?: { approvalMode?: "ask" | "auto" },
+  options?: { approvalMode?: "ask" | "auto"; commands?: Record<string, unknown> },
 ): ApprovalFake {
   const events: MuseHostEvent[] = [];
   const pickers: PickerEvent[] = [];
@@ -1143,7 +1238,8 @@ function fakeApprovalHost(
     close: async () => undefined,
   };
   const connection: HostConnection = {
-    command: async () => ({}),
+    command: async (method): Promise<Record<string, unknown>> =>
+      (options?.commands?.[method] ?? {}) as Record<string, unknown>,
     request: async () => ({}),
     onNotification: () => undefined,
   };

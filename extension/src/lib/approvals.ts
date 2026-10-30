@@ -697,6 +697,23 @@ export function autoAllowStage(
   return paths.every((token) => insideDir(workspaceRoot, workspaceRoot, token));
 }
 
+/**
+ * Reads that never ask in any mode: fileAccess/read with a path inside the
+ * workspace. (Read-only shell stages ride the quiet row by their own rule;
+ * network, socket, process and unknown tool subjects are never free.)
+ */
+export function isFreeRead(
+  subject: { kind: string; access?: string; path?: string },
+  workspaceRoot: string,
+): boolean {
+  return (
+    subject.kind === "fileAccess" &&
+    (subject.access ?? "").toLowerCase() === "read" &&
+    typeof subject.path === "string" &&
+    autoAllowFile(subject.path, workspaceRoot)
+  );
+}
+
 /** Auto mode: a file change goes through when its path stays inside the workspace. */
 export function autoAllowFile(target: string, workspaceRoot: string): boolean {
   if (workspaceRoot === "" || DYNAMIC_TOKEN.test(target)) {
