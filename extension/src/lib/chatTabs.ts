@@ -4,7 +4,7 @@
 import { randomBytes } from "node:crypto";
 import type { TranscriptEntry } from "./session.js";
 
-/** The first chat's tab: it resumes the saved session and feeds the sidebar. */
+/** The first chat's tab: it resumes the saved session. */
 export const MAIN_TAB_UID = "main";
 
 /** A fresh tab id. */

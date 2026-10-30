@@ -3,22 +3,28 @@ import { formatSessionLabel, cleanSessionLabel } from "./brain/brain.js";
 import { BrainViewProvider } from "./brain/brainView.js";
 import { ChatController } from "./chatController.js";
 import { bindChatPanel, CHAT_PANEL_VIEW_TYPE, openChatTab } from "./chatPanel.js";
-import { ChatViewProvider, readOpenIn } from "./chatView.js";
 import {
   cleanTabRecords,
   createTabUid,
   forkTopic,
   MAIN_TAB_UID,
   reviveSeed,
+  tabStorageKey,
   tabTitle,
   type PeekCandidate,
   type TabRecord,
   type TabSeed,
 } from "./lib/chatTabs.js";
+import { current as lockHolder, subscribeLock } from "./muse/turnLock.js";
+import { buildSessionRows } from "./sidebar/sessions.js";
+import { SessionsViewProvider } from "./sidebar/sessionsView.js";
+import { usageViewData } from "./sidebar/usage.js";
+import { UsageViewProvider } from "./sidebar/usageView.js";
 
 const TABS_KEY = "metaBetta.tabs";
 const SESSION_ID_KEY = "metaBetta.sessionId";
 const SESSION_LABEL_KEY = "metaBetta.sessionLabel";
+const LAST_MESSAGE_KEY = "metaBetta.lastMessageAt";
 
 interface ChatTab {
   uid: string;
@@ -41,9 +47,10 @@ let mainTab: ChatTab | undefined;
 let extraTabs: ChatTab[] = [];
 let activeUid = MAIN_TAB_UID;
 let usageBar: vscode.StatusBarItem | undefined;
-let viewProvider: ChatViewProvider | undefined;
 let brainProvider: BrainViewProvider | undefined;
 let brainSideProvider: BrainViewProvider | undefined;
+let usageProvider: UsageViewProvider | undefined;
+let sessionsProvider: SessionsViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Meta Betta");
@@ -74,20 +81,23 @@ export function activate(context: vscode.ExtensionContext): void {
       brainSideProvider?.outline();
     },
   };
-  // The first chat resumes the saved session; the sidebar mirrors it.
+  // The first chat resumes the saved session; every chat lives in a tab.
   mainTab = { uid: MAIN_TAB_UID, controller: createController(MAIN_TAB_UID, mainSeed()) };
-  viewProvider = new ChatViewProvider(context.extensionUri, mainTab.controller, () => {
-    openMainPanel();
-  });
   brainProvider = new BrainViewProvider(context.extensionUri);
   brainSideProvider = new BrainViewProvider(context.extensionUri);
+  usageProvider = new UsageViewProvider(context.extensionUri, () => refreshUsage(), () =>
+    activeTab().controller.dispatchSlash("usage", ""),
+  );
+  sessionsProvider = new SessionsViewProvider(
+    context.extensionUri,
+    () => refreshSessions(),
+    () => openTab(createTabUid()),
+    (uid) => openSessionFromSidebar(uid),
+  );
   context.subscriptions.push(
     usageBar,
     vscode.commands.registerCommand("metaBetta.showUsage", () => {
       void activeTab().controller.dispatchSlash("usage", "");
-    }),
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, viewProvider, {
-      webviewOptions: { retainContextWhenHidden: true },
     }),
     vscode.window.registerWebviewViewProvider(BrainViewProvider.viewType, brainProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -99,28 +109,22 @@ export function activate(context: vscode.ExtensionContext): void {
         webviewOptions: { retainContextWhenHidden: true },
       },
     ),
+    vscode.window.registerWebviewViewProvider(UsageViewProvider.viewType, usageProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+    vscode.window.registerWebviewViewProvider(SessionsViewProvider.viewType, sessionsProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+    // The Sessions spinner follows the lock holder.
+    { dispose: subscribeLock(() => refreshSessions()) },
     vscode.window.registerWebviewPanelSerializer(CHAT_PANEL_VIEW_TYPE, {
       deserializeWebviewPanel: async (panel, state) => reviveTab(panel, state),
     }),
-    vscode.commands.registerCommand("metaBetta.open", async () => {
-      if (readOpenIn() === "sidebar") {
-        await vscode.commands.executeCommand("metaBetta.chat.focus");
-      } else {
-        const active = findTab(activeUid);
-        if (active?.panel) {
-          active.panel.reveal(vscode.ViewColumn.Active);
-        } else {
-          openMainPanel();
-        }
-      }
+    vscode.commands.registerCommand("metaBetta.open", () => {
+      openMainPanel();
     }),
     vscode.commands.registerCommand("metaBetta.saveMyDay", () => {
       void activeTab().controller.saveMyDay();
-    }),
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("metaBetta.openIn")) {
-        viewProvider?.sync();
-      }
     }),
     vscode.workspace.onDidGrantWorkspaceTrust(() => {
       for (const tab of allTabs()) {
@@ -133,6 +137,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       void brainProvider?.refresh();
       void brainSideProvider?.refresh();
+      refreshSessions();
+      refreshUsage();
     }),
   );
 }
@@ -141,9 +147,10 @@ export function deactivate(): Promise<void> | void {
   const tabs = allTabs();
   mainTab = undefined;
   extraTabs = [];
-  viewProvider = undefined;
   brainProvider = undefined;
   brainSideProvider = undefined;
+  usageProvider = undefined;
+  sessionsProvider = undefined;
   usageBar = undefined;
   ctx = undefined;
   if (tabs.length > 0) {
@@ -194,6 +201,7 @@ function createController(uid: string, seed?: TabSeed): ChatController {
       labelOf: (other) => labelOf(other),
       revealTab: (other) => revealTab(other),
       stopTab: (other) => stopTab(other),
+      onUsage: () => refreshUsage(),
     },
   );
 }
@@ -224,6 +232,57 @@ function tabChanged(uid: string, patch: TabRecord): void {
   const tab = findTab(uid);
   if (tab?.panel) {
     tab.panel.title = tabTitle(records[uid]?.topic ?? "");
+  }
+  refreshSessions();
+}
+
+/** The sidebar Usage view follows the active tab, like the status bar. */
+function refreshUsage(): void {
+  if (!ctx || !usageProvider) {
+    return;
+  }
+  const snapshot = activeTab().controller.usageSnapshot();
+  const now = Date.now();
+  usageProvider.show(usageViewData({ session: snapshot.session, today: snapshot.today }, now));
+  // Allowance needs the host; it fills in a beat later, when known.
+  void activeTab()
+    .controller.usageAllowance()
+    .then((allowance) => {
+      usageProvider?.show(
+        usageViewData({ session: snapshot.session, today: snapshot.today, ...allowance }, Date.now()),
+      );
+    });
+}
+
+/** The sidebar Sessions view: open tabs and recent chats, newest first. */
+function refreshSessions(): void {
+  if (!ctx || !sessionsProvider) {
+    return;
+  }
+  const records = tabRecords();
+  const liveUids = allTabs().map((tab) => tab.uid);
+  const clocks: Record<string, number | undefined> = {};
+  for (const uid of new Set([...Object.keys(records), ...liveUids])) {
+    clocks[uid] = ctx.storage.get<number>(tabStorageKey(LAST_MESSAGE_KEY, uid));
+  }
+  sessionsProvider.show(
+    buildSessionRows({ records, liveUids, clocks, holder: lockHolder(), now: Date.now() }),
+  );
+}
+
+/** A Sessions row click: focus the tab, or reopen the chat to resume it. */
+function openSessionFromSidebar(uid: string): void {
+  if (uid === MAIN_TAB_UID) {
+    openMainPanel();
+    return;
+  }
+  if (findTab(uid)) {
+    revealTab(uid);
+    return;
+  }
+  const seed = reviveSeed(uid, tabRecords());
+  if (seed) {
+    openTab(uid, seed);
   }
 }
 
@@ -258,6 +317,7 @@ function setActiveTab(uid: string): void {
   if (tab && usageBar) {
     usageBar.text = tab.controller.statusBarText();
   }
+  refreshUsage();
 }
 
 /** Open a fresh (or fork-seeded) tab and focus it. */
@@ -278,6 +338,7 @@ function openTab(uid: string, seed?: TabSeed): void {
     }
   });
   setActiveTab(uid);
+  refreshSessions();
 }
 
 /** Open (or reveal) the first chat's tab. */
@@ -321,14 +382,36 @@ function closeTab(uid: string): void {
   if (tab) {
     void tab.controller.dispose();
   }
-  if (ctx) {
-    const records = tabRecords();
-    delete records[uid];
-    void ctx.storage.update(TABS_KEY, records);
-  }
+  // The record stays: closed tabs live on in Sessions as recent chats.
+  pruneClosedRecords();
+  refreshSessions();
   if (activeUid === uid) {
     setActiveTab(MAIN_TAB_UID);
   }
+}
+
+/** Recent chats cap: closed tabs beyond this fall off the Sessions list. */
+const MAX_RECENT_CHATS = 20;
+
+function pruneClosedRecords(): void {
+  if (!ctx) {
+    return;
+  }
+  const records = tabRecords();
+  const live = new Set(allTabs().map((tab) => tab.uid));
+  const closed = Object.keys(records).filter((uid) => !live.has(uid));
+  if (closed.length <= MAX_RECENT_CHATS) {
+    return;
+  }
+  const storage = ctx.storage;
+  const oldest = closed
+    .map((uid) => ({ uid, at: storage.get<number>(tabStorageKey(LAST_MESSAGE_KEY, uid)) ?? -1 }))
+    .sort((a, b) => a.at - b.at)
+    .slice(0, closed.length - MAX_RECENT_CHATS);
+  for (const entry of oldest) {
+    delete records[entry.uid];
+  }
+  void ctx.storage.update(TABS_KEY, records);
 }
 
 function revealTab(uid: string): void {
@@ -340,13 +423,9 @@ function revealTab(uid: string): void {
     tab.panel.reveal(vscode.ViewColumn.Active);
     return;
   }
-  // The chat is running panel-less (sidebar): take them to it.
+  // The main chat's panel was closed: reopen it.
   if (uid === MAIN_TAB_UID) {
-    if (readOpenIn() === "sidebar") {
-      void vscode.commands.executeCommand("metaBetta.chat.focus");
-    } else {
-      openMainPanel();
-    }
+    openMainPanel();
   }
 }
 

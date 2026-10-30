@@ -126,7 +126,7 @@ import {
   type TabSeed,
 } from "./lib/chatTabs.js";
 
-/** One attached chat surface: the editor panel or the sidebar view. */
+/** One attached chat surface: a chat tab's panel. */
 export interface ChatSink {
   post(message: unknown): void;
 }
@@ -154,6 +154,8 @@ export interface TabHost {
   revealTab: (uid: string) => void;
   /** Stop it: stop the tab running the turn. */
   stopTab: (uid: string) => void;
+  /** Fresh usage numbers landed: the sidebar Usage view wants them. */
+  onUsage?: () => void;
 }
 
 export interface SavedSection {
@@ -942,6 +944,26 @@ export class ChatController {
       recordDayUsage(prev, todayKey(), this.museSessionId ?? "unknown", usage),
     );
     this.updateStatusBar(formatStatusBar(usage));
+    this.tabHost.onUsage?.();
+  }
+
+  /** This chat's numbers plus today's sums, for the sidebar Usage view. */
+  public usageSnapshot(): {
+    session?: SessionUsageTotals;
+    today: { totalTokens: number; usd: number };
+  } {
+    const today = sumDayUsage(cleanDayUsage(this.globalState?.get<unknown>(DAILY_USAGE_KEY)), todayKey());
+    return { session: this.lastUsage, today };
+  }
+
+  /** The account allowance slices, or none when they can't be read. */
+  public async usageAllowance(): Promise<{ weekly?: AllowanceSlice; window?: AllowanceSlice }> {
+    try {
+      const { host, root } = await this.slashHost();
+      return await host.readSubscription(root);
+    } catch {
+      return {};
+    }
   }
 
   private async slashListModels(): Promise<ModelRow[]> {
@@ -2425,7 +2447,7 @@ export class ChatController {
   }
 }
 
-/** Route one webview message to the controller. Shared by panel and sidebar. */
+/** Route one webview message to the controller. Shared by every chat tab. */
 export function routeViewMessage(controller: ChatController, message: unknown): void {
   if (!isRecord(message)) {
     return;

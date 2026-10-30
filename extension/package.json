@@ -13,9 +13,10 @@
     "Chat"
   ],
   "activationEvents": [
-    "onView:metaBetta.chat",
     "onView:metaBetta.brain",
     "onView:metaBetta.brainSidebar",
+    "onView:metaBetta.usage",
+    "onView:metaBetta.sessions",
     "onCommand:metaBetta.open",
     "onCommand:metaBetta.saveMyDay"
   ],
@@ -30,7 +31,8 @@
     "commands": [
       {
         "command": "metaBetta.open",
-        "title": "Meta Betta: Open chat"
+        "title": "Meta Betta: Open chat",
+        "icon": "media/icon.svg"
       },
       {
         "command": "metaBetta.saveMyDay",
@@ -49,21 +51,36 @@
     "views": {
       "metaBetta": [
         {
-          "id": "metaBetta.chat",
+          "id": "metaBetta.usage",
           "type": "webview",
-          "name": "Chat"
+          "name": "Usage"
+        },
+        {
+          "id": "metaBetta.sessions",
+          "type": "webview",
+          "name": "Sessions"
         },
         {
           "id": "metaBetta.brainSidebar",
           "type": "webview",
-          "name": "Brain"
+          "name": "Brain",
+          "visibility": "collapsed"
         }
       ],
       "explorer": [
         {
           "id": "metaBetta.brain",
           "type": "webview",
-          "name": "Brain"
+          "name": "Brain",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "metaBetta.open",
+          "group": "navigation"
         }
       ]
     },
@@ -74,12 +91,6 @@
           "type": "string",
           "default": "",
           "description": "Path to the Muse binary. Leave empty to find it automatically."
-        },
-        "metaBetta.openIn": {
-          "type": "string",
-          "enum": ["editor", "sidebar"],
-          "default": "editor",
-          "description": "Where the Meta Betta chat lives: an editor tab or the side bar."
         },
         "metaBetta.memory": {
           "type": "boolean",

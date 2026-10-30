@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src __CSP_SOURCE__; script-src 'nonce-__NONCE__';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="__STYLE_URI__">
+  <title>Meta Betta Sessions</title>
+</head>
+<body>
+  <main id="sessions">
+    <button id="sessions-new" class="fixed-btn" type="button">+ New chat</button>
+    <div id="session-rows"></div>
+  </main>
+  <script nonce="__NONCE__">
+    (function () {
+      "use strict";
+      var vscode = acquireVsCodeApi();
+      var rowsEl = document.getElementById("session-rows");
+
+      document.getElementById("sessions-new").addEventListener("click", function () {
+        vscode.postMessage({ type: "newSession" });
+      });
+
+      function renderRow(row) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "session-row";
+        var mark = document.createElement("span");
+        mark.className = row.working ? "session-spin" : row.open ? "session-dot" : "session-blank";
+        mark.setAttribute("aria-hidden", "true");
+        var label = document.createElement("span");
+        label.className = "session-label";
+        label.textContent = row.label;
+        button.appendChild(mark);
+        button.appendChild(label);
+        if (row.age) {
+          var age = document.createElement("span");
+          age.className = "session-age";
+          age.textContent = "· " + row.age;
+          button.appendChild(age);
+        }
+        button.addEventListener("click", function () {
+          vscode.postMessage({ type: "openSession", uid: row.uid });
+        });
+        return button;
+      }
+
+      window.addEventListener("message", function (event) {
+        var message = event.data;
+        if (!message || typeof message !== "object" || message.type !== "sessions") {
+          return;
+        }
+        rowsEl.replaceChildren();
+        var rows = Array.isArray(message.rows) ? message.rows : [];
+        for (var i = 0; i < rows.length; i += 1) {
+          if (rows[i] && typeof rows[i].uid === "string") {
+            rowsEl.appendChild(renderRow(rows[i]));
+          }
+        }
+      });
+
+      vscode.postMessage({ type: "sessionsReady" });
+    })();
+  </script>
+</body>
+</html>

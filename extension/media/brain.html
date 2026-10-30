@@ -93,6 +93,8 @@
           }, 5000);
         }
       });
+
+      vscode.postMessage({ type: "brainReady" });
     })();
   </script>
 </body>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src __CSP_SOURCE__; script-src 'nonce-__NONCE__';">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="__STYLE_URI__">
+  <title>Meta Betta Usage</title>
+</head>
+<body>
+  <main id="usage">
+    <p id="usage-today"></p>
+    <p id="usage-session"></p>
+    <div id="usage-allow" hidden>
+      <p id="usage-allow-label"></p>
+      <div class="usage-bar" aria-hidden="true"><div id="usage-allow-fill"></div></div>
+    </div>
+    <p><a id="usage-details" href="#">View details</a></p>
+  </main>
+  <script nonce="__NONCE__">
+    (function () {
+      "use strict";
+      var vscode = acquireVsCodeApi();
+      var todayEl = document.getElementById("usage-today");
+      var sessionEl = document.getElementById("usage-session");
+      var allowEl = document.getElementById("usage-allow");
+      var allowLabelEl = document.getElementById("usage-allow-label");
+      var allowFillEl = document.getElementById("usage-allow-fill");
+
+      document.getElementById("usage-details").addEventListener("click", function (event) {
+        event.preventDefault();
+        vscode.postMessage({ type: "usageDetails" });
+      });
+
+      window.addEventListener("message", function (event) {
+        var message = event.data;
+        if (!message || typeof message !== "object" || message.type !== "usage" || !message.data) {
+          return;
+        }
+        todayEl.textContent = message.data.today || "";
+        sessionEl.textContent = message.data.session || "";
+        if (message.data.allowance && typeof message.data.allowance.usedPercent === "number") {
+          allowEl.hidden = false;
+          allowLabelEl.textContent = message.data.allowance.label || "";
+          allowFillEl.style.width = message.data.allowance.usedPercent + "%";
+        } else {
+          allowEl.hidden = true;
+        }
+      });
+
+      vscode.postMessage({ type: "usageReady" });
+    })();
+  </script>
+</body>
+</html>

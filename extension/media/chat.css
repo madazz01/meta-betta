@@ -157,6 +157,121 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+#usage,
+#sessions {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#usage p {
+  margin: 0;
+}
+
+#usage-session,
+#usage-allow-label {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+#usage-allow-label {
+  margin: 0 0 4px;
+}
+
+#usage a {
+  color: var(--vscode-textLink-foreground);
+}
+
+.usage-bar {
+  height: 6px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-widget-border);
+  background-color: var(--vscode-input-background);
+  overflow: hidden;
+}
+
+#usage-allow-fill {
+  height: 100%;
+  background-color: var(--mb-accent);
+}
+
+#session-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  width: 100%;
+  box-sizing: border-box;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 6px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--vscode-foreground);
+  text-align: left;
+}
+
+.session-row:hover {
+  background-color: var(--vscode-list-hoverBackground, var(--vscode-editor-background));
+}
+
+.session-dot {
+  flex: none;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--mb-accent);
+}
+
+.session-blank {
+  flex: none;
+  width: 7px;
+}
+
+.session-spin {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--vscode-widget-border);
+  border-top-color: var(--mb-accent);
+  animation: session-spin 0.8s linear infinite;
+}
+
+@keyframes session-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-spin {
+    animation: none;
+  }
+}
+
+.session-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-age {
+  flex: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
 #messages {
   flex: 1;
   overflow-y: auto;

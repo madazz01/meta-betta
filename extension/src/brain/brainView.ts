@@ -29,13 +29,18 @@ export class BrainViewProvider implements vscode.WebviewViewProvider {
       }
     });
     webviewView.webview.onDidReceiveMessage((message: unknown) => {
-      if (
-        typeof message === "object" &&
-        message !== null &&
-        (message as { type?: unknown }).type === "openBrainFile" &&
-        typeof (message as { file?: unknown }).file === "string"
-      ) {
-        void this.openFile((message as { file: string }).file);
+      if (typeof message !== "object" || message === null) {
+        return;
+      }
+      const incoming = message as { type?: unknown; file?: unknown };
+      // A restored view loads after our first refresh; its ready note
+      // re-sends the cards so the panel is never blank after a reload.
+      if (incoming.type === "brainReady") {
+        void this.refresh();
+        return;
+      }
+      if (incoming.type === "openBrainFile" && typeof incoming.file === "string") {
+        void this.openFile(incoming.file);
       }
     });
     const folder = vscode.workspace.workspaceFolders?.[0];
