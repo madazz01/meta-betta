@@ -3,3 +3,7 @@ node_modules/
 .env
 extension/out/
 sandbox/
+
+# Meta Betta working files when building Meta Betta with itself (personal notes stay local)
+brain/
+.backups/
