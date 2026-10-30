@@ -37,6 +37,7 @@ import {
   type ChatAssistantMessage,
   type ChatUserMessage,
   type StoredUndo,
+  type TranscriptEntry,
 } from "./lib/session.js";
 import { shortReason } from "./lib/startup.js";
 import {
@@ -100,7 +101,19 @@ import {
   type MuseHostEvent,
 } from "./muse/museHost.js";
 import { current as lockHolder, TurnBusyError } from "./muse/turnLock.js";
-import { MAIN_TAB_UID, MessageQueue, type TabRecord, type TabSeed } from "./lib/chatTabs.js";
+import {
+  adoptsStoredLabel,
+  clearedKeysOnFailedResume,
+  findPeekTarget,
+  formatPeekBackground,
+  MAIN_TAB_UID,
+  MessageQueue,
+  queueRetryNote,
+  tabStorageKey,
+  type PeekCandidate,
+  type TabRecord,
+  type TabSeed,
+} from "./lib/chatTabs.js";
 
 /** One attached chat surface: the editor panel or the sidebar view. */
 export interface ChatSink {
@@ -121,7 +134,9 @@ export interface TabHost {
   /** New pill: open a fresh tab and focus it. */
   onNewTab: () => void;
   /** Fork pill: open a tab on the forked session and focus it. */
-  onForkTab: (sessionId: string) => void;
+  onForkTab: (sessionId: string, transcript: TranscriptEntry[]) => void;
+  /** Open + recent chats (labels/topics) for the peek matcher. */
+  peekChats: () => PeekCandidate[];
   /** Another tab's header label, for the busy line. */
   labelOf: (uid: string) => string | undefined;
   /** Go to it: reveal the tab running the turn. */
@@ -474,8 +489,18 @@ export class ChatController {
       return;
     }
     this.pendingBefore = await this.takeBeforeSnapshot(folder);
+    const peek = this.peekFor(text);
+    if (peek) {
+      const note = `Peeked at '${peek.label}'`;
+      // A queued message retries sendNow; the note shows once per message.
+      const noted = [...this.history].reverse().find((event) => event.type === "notice");
+      if (noted?.type !== "notice" || noted.text !== note) {
+        this.recordAndBroadcast({ type: "notice", kind: "info", text: note });
+      }
+    }
+    const prompt = await this.withBackground(folder, text);
     try {
-      await host.send(await this.withBackground(folder, text), folder.uri.fsPath);
+      await host.send(peek ? `${prompt}\n\n${peek.block}` : prompt, folder.uri.fsPath);
     } catch (error) {
       if (error instanceof TurnBusyError) {
         this.enqueueMessage(text);
@@ -483,6 +508,25 @@ export class ChatController {
       }
       throw error;
     }
+  }
+
+  /**
+   * The background peek for a message that refers to another chat: that
+   * chat's last transcript entries, for this turn only. Otherwise never —
+   * other chats stay unloaded.
+   */
+  private peekFor(text: string): { label: string; block: string } | undefined {
+    const target = findPeekTarget(text, this.tabHost.uid, this.tabHost.peekChats());
+    if (!target) {
+      return undefined;
+    }
+    const entries = cleanTranscript(this.storage.get<unknown>(tabStorageKey(TRANSCRIPT_KEY, target.uid)));
+    if (entries.length === 0) {
+      this.log(`Peek: '${target.label}' has nothing to show`);
+      return undefined;
+    }
+    this.log(`Peek: '${target.label}' (${entries.length} entries)`);
+    return { label: target.label, block: formatPeekBackground(target.label, entries) };
   }
 
   /**
@@ -509,11 +553,16 @@ export class ChatController {
     if (this.flushing) {
       return;
     }
-    if (lockHolder() !== undefined) {
+    const holder = lockHolder();
+    if (holder !== undefined) {
+      this.log(queueRetryNote(this.tabHost.uid, this.queue.size, holder));
       this.showBusy();
       return;
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
+    if (this.queue.size > 0 || this.pendingSave === "full") {
+      this.log(queueRetryNote(this.tabHost.uid, this.queue.size, undefined));
+    }
     const next = this.queue.shift();
     this.flushing = true;
     try {
@@ -910,7 +959,9 @@ export class ChatController {
    */
   private async slashFork(): Promise<void> {
     const { host, root } = await this.slashHost();
-    this.tabHost.onForkTab(await host.forkSession(root));
+    // The fork shows the conversation it came from: a copy at fork time.
+    const transcript = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
+    this.tabHost.onForkTab(await host.forkSession(root), transcript);
   }
 
   private async slashListTasks(): Promise<TaskRow[]> {
@@ -1817,8 +1868,12 @@ export class ChatController {
             shown = 0;
           }
           if (shown === 0) {
-            const stored = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
-            this.log(`Resume: stored transcript (${stored.length} entries)`);
+            const own = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
+            // A forked tab replays the source chat's transcript at fork time.
+            const stored = own.length > 0 ? own : cleanTranscript(this.tabHost.seed?.transcript);
+            this.log(
+              `Resume: stored transcript (${stored.length} entries${own.length === 0 && stored.length > 0 ? ", from fork" : ""})`,
+            );
             const replayed = new Set<string>();
             stored.forEach((entry, index) => {
               if (entry.role === "undo" && entry.id) {
@@ -1949,25 +2004,30 @@ export class ChatController {
       this.heartbeat();
       return;
     }
-    const stored = cleanSessionLabel(this.storage.get<unknown>(SESSION_LABEL_KEY));
-    if (stored) {
-      const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
-      if (isLabelTaken(stored.id, live, Date.now())) {
-        this.diverged = true;
-        this.sessionTopic = stored.topic;
-      } else {
-        this.sessionId = stored.id;
-        this.sessionTopic = stored.topic;
+    // Only the first tab adopts the pre-tabs label; a fresh tab keeps the
+    // id it minted, and its title follows it from there.
+    if (adoptsStoredLabel(this.tabHost.uid, seed)) {
+      const stored = cleanSessionLabel(this.storage.get<unknown>(SESSION_LABEL_KEY));
+      if (stored) {
+        const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
+        if (isLabelTaken(stored.id, live, Date.now())) {
+          this.diverged = true;
+          this.sessionTopic = stored.topic;
+        } else {
+          this.sessionId = stored.id;
+          this.sessionTopic = stored.topic;
+        }
+        this.broadcastSessionLabel();
+        this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
       }
-      this.broadcastSessionLabel();
-      this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
     }
     this.heartbeat();
   }
 
   private persistSessionLabel(): void {
     this.labelSettled = true;
-    if (!this.diverged) {
+    // The shared key is the first tab's; other tabs keep theirs in the record.
+    if (!this.diverged && this.tabHost.uid === MAIN_TAB_UID) {
       this.storeSet(SESSION_LABEL_KEY, { id: this.sessionId, topic: this.sessionTopic });
     }
     this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
@@ -2011,11 +2071,11 @@ export class ChatController {
         },
         clear: () => {
           this.tabChanged({ session: undefined });
-          if (this.tabHost.uid === MAIN_TAB_UID) {
-            this.storeSet(SESSION_ID_KEY, undefined);
+          // The dead session id goes; the stored transcript and clock stay
+          // as the fallback, so a failed resume never wipes the visible chat.
+          for (const key of clearedKeysOnFailedResume(this.tabHost.uid)) {
+            this.storeSet(key, undefined);
           }
-          this.storeSet(this.tabKey(TRANSCRIPT_KEY), undefined);
-          this.storeSet(this.tabKey(LAST_MESSAGE_KEY), undefined);
           // Undo history stays: the snapshots are still valid.
           this.anchorHigh = 0;
         },
@@ -2042,7 +2102,7 @@ export class ChatController {
    * migration); other tabs suffix their own.
    */
   private tabKey(base: string): string {
-    return this.tabHost.uid === MAIN_TAB_UID ? base : `${base}.${this.tabHost.uid}`;
+    return tabStorageKey(base, this.tabHost.uid);
   }
 
   /** Report a session/label/topic change for the tab record + title. */

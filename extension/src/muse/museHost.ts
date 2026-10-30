@@ -6,7 +6,7 @@
 // below are erased at compile time.
 
 import { execFile } from "node:child_process";
-import { acquire as acquireTurn, release as releaseTurn, TurnBusyError } from "./turnLock.js";
+import { acquire as acquireTurn, current as lockHolder, release as releaseTurn, TurnBusyError } from "./turnLock.js";
 import type {
   ApprovalFailureHandler,
   ApprovalHandler,
@@ -246,13 +246,19 @@ export class MuseHost {
   public async send(text: string, workspaceRoot: string): Promise<void> {
     // First, before any event: a lost race throws with nothing emitted, so
     // the controller can queue the message behind the running turn.
-    if (!acquireTurn(this.turnOwner())) {
+    const owner = this.turnOwner();
+    if (!acquireTurn(owner)) {
+      this.log(`lock: ${owner} lost the race (held by ${lockHolder() ?? "?"})`);
       throw new TurnBusyError();
     }
+    this.log(`lock: ${owner} acquired`);
     try {
       await this.runTurn(text, workspaceRoot);
     } finally {
-      releaseTurn(this.turnOwner());
+      if (lockHolder() === owner) {
+        releaseTurn(owner);
+        this.log(`lock: ${owner} released`);
+      }
     }
   }
 
@@ -332,7 +338,10 @@ export class MuseHost {
     this.turnGen += 1;
     this.currentTurnId = undefined;
     // A turn stuck awaiting completion must not wedge every other tab.
-    releaseTurn(this.turnOwner());
+    if (lockHolder() === this.turnOwner()) {
+      releaseTurn(this.turnOwner());
+      this.log(`lock: ${this.turnOwner()} released (dispose)`);
+    }
     for (const finish of this.approvalWaiters) {
       finish(undefined);
     }

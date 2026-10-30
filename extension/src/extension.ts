@@ -10,6 +10,7 @@ import {
   MAIN_TAB_UID,
   reviveSeed,
   tabTitle,
+  type PeekCandidate,
   type TabRecord,
   type TabSeed,
 } from "./lib/chatTabs.js";
@@ -186,7 +187,9 @@ function createController(uid: string, seed?: TabSeed): ChatController {
       seed,
       onChanged: (record) => tabChanged(uid, record),
       onNewTab: () => openTab(createTabUid()),
-      onForkTab: (sessionId) => openTab(createTabUid(), { session: sessionId, catchUp: true }),
+      onForkTab: (sessionId, transcript) =>
+        openTab(createTabUid(), { session: sessionId, catchUp: true, transcript }),
+      peekChats: () => peekChats(),
       labelOf: (other) => labelOf(other),
       revealTab: (other) => revealTab(other),
       stopTab: (other) => stopTab(other),
@@ -229,6 +232,23 @@ function labelOf(uid: string): string | undefined {
     return undefined;
   }
   return formatSessionLabel(record.labelId, record.topic ?? "");
+}
+
+/** Open + recent chats with labels, for the peek matcher. */
+function peekChats(): PeekCandidate[] {
+  const chats: PeekCandidate[] = [];
+  for (const [uid, record] of Object.entries(tabRecords())) {
+    if (!record.labelId) {
+      continue;
+    }
+    chats.push({
+      uid,
+      id: record.labelId,
+      label: formatSessionLabel(record.labelId, record.topic ?? ""),
+      topic: record.topic ?? "",
+    });
+  }
+  return chats;
 }
 
 function setActiveTab(uid: string): void {

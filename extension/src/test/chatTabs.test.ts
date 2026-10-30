@@ -1,11 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  adoptsStoredLabel,
+  clearedKeysOnFailedResume,
   cleanTabRecords,
   createTabUid,
+  findPeekTarget,
+  formatPeekBackground,
+  MAIN_TAB_UID,
   MessageQueue,
+  queueRetryNote,
   reviveSeed,
+  tabStorageKey,
   tabTitle,
+  type PeekCandidate,
 } from "../lib/chatTabs.js";
 
 describe("tabTitle", () => {
@@ -78,5 +86,85 @@ describe("MessageQueue", () => {
       "m5",
     ]);
     assert.equal(queue.shift(), undefined);
+  });
+});
+
+describe("tabStorageKey", () => {
+  it("keeps the pre-tabs key for the first tab, suffixes the rest", () => {
+    assert.equal(tabStorageKey("metaBetta.transcript", MAIN_TAB_UID), "metaBetta.transcript");
+    assert.equal(tabStorageKey("metaBetta.transcript", "tab-x"), "metaBetta.transcript.tab-x");
+  });
+});
+
+describe("clearedKeysOnFailedResume", () => {
+  it("forgets only the dead session id, never the transcript or clock", () => {
+    assert.deepEqual(clearedKeysOnFailedResume(MAIN_TAB_UID), ["metaBetta.sessionId"]);
+    assert.deepEqual(clearedKeysOnFailedResume("tab-x"), []);
+  });
+});
+
+describe("adoptsStoredLabel", () => {
+  it("lets only the first tab adopt the stored label, and only unseeded", () => {
+    assert.equal(adoptsStoredLabel(MAIN_TAB_UID, undefined), true);
+    assert.equal(adoptsStoredLabel("tab-x", undefined), false);
+    assert.equal(adoptsStoredLabel(MAIN_TAB_UID, { labelId: "l1" }), false);
+    assert.equal(adoptsStoredLabel("tab-x", { labelId: "l1" }), false);
+  });
+});
+
+describe("findPeekTarget", () => {
+  const chats: PeekCandidate[] = [
+    { uid: MAIN_TAB_UID, id: "66ab", label: "Session 66ab · todo", topic: "todo" },
+    { uid: "tab-x", id: "58f2", label: "Session 58f2 · bread", topic: "bread" },
+  ];
+
+  it("matches an explicit session id or topic", () => {
+    assert.equal(findPeekTarget("like we did in session 58f2", MAIN_TAB_UID, chats)?.uid, "tab-x");
+    assert.equal(findPeekTarget("the bread chat said otherwise", MAIN_TAB_UID, chats)?.uid, "tab-x");
+  });
+
+  it("matches the other tab only when there is exactly one", () => {
+    assert.equal(findPeekTarget("ask the other tab", MAIN_TAB_UID, chats)?.uid, "tab-x");
+    assert.equal(findPeekTarget("ask the other tab", MAIN_TAB_UID, [...chats, { uid: "tab-y", id: "99aa", label: "Session 99aa · jam", topic: "jam" }]), undefined);
+  });
+
+  it("matches yesterday's chat to the first chat, never itself", () => {
+    assert.equal(findPeekTarget("as in yesterday's chat", "tab-x", chats)?.uid, MAIN_TAB_UID);
+    assert.equal(findPeekTarget("as in yesterday's chat", MAIN_TAB_UID, chats), undefined);
+    assert.equal(findPeekTarget("carry on", "tab-x", chats), undefined);
+  });
+
+  it("ignores short topics and partial ids", () => {
+    assert.equal(findPeekTarget("to do this now", "tab-x", chats), undefined);
+    assert.equal(findPeekTarget("mention 58f nearby", "tab-x", chats), undefined);
+  });
+});
+
+describe("formatPeekBackground", () => {
+  it("renders the other chat as You/Muse lines under a background note", () => {
+    const block = formatPeekBackground("Session 66ab · todo", [
+      { role: "user", text: "delete todo.txt" },
+      { role: "assistant", text: "Done." },
+      { role: "undo", text: "", id: "undo-1" },
+    ]);
+    assert.ok(block.includes("[Also relevant: the last messages of 'Session 66ab · todo'."));
+    assert.ok(block.includes("You: delete todo.txt"));
+    assert.ok(block.includes("Muse: Done."));
+    assert.ok(!block.includes("undo-1"));
+  });
+
+  it("keeps the newest lines when over budget", () => {
+    const entries = Array.from({ length: 30 }, (_, index) => ({ role: "user" as const, text: `message ${index} `.padEnd(300, "x") }));
+    const block = formatPeekBackground("Session 66ab · todo", entries);
+    assert.ok(block.length <= 4600);
+    assert.ok(block.includes("message 29"));
+    assert.ok(!block.includes("message 0 "));
+  });
+});
+
+describe("queueRetryNote", () => {
+  it("names the tab, the waiting count and the holder", () => {
+    assert.equal(queueRetryNote("tab-x", 2, MAIN_TAB_UID), "queue: tab-x retrying (2 waiting, held by main)");
+    assert.equal(queueRetryNote("tab-x", 1, undefined), "queue: tab-x retrying (1 waiting)");
   });
 });

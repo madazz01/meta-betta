@@ -368,6 +368,37 @@ describe("turn lock", () => {
   });
 });
 
+describe("turn lock logging", () => {
+  it("logs each acquire and release with the tab id", async () => {
+    const fake = fakeCommands({ hostOptions: { turnOwner: "tab-b" } });
+    await fake.host.send("hello", process.cwd());
+    await fake.host.dispose();
+    assert.ok(
+      fake.logs.some((line) => line.includes("tab-b") && /acquir/i.test(line)),
+      `no acquire line for tab-b in: ${fake.logs.join(" | ")}`,
+    );
+    assert.ok(
+      fake.logs.some((line) => line.includes("tab-b") && /releas/i.test(line)),
+      `no release line for tab-b in: ${fake.logs.join(" | ")}`,
+    );
+  });
+
+  it("logs a lost lock race with both tab ids", async () => {
+    const fake = fakeCommands({ hostOptions: { turnOwner: "tab-b" } });
+    assert.equal(acquireTurn("main"), true);
+    try {
+      await assert.rejects(fake.host.send("hello", process.cwd()), TurnBusyError);
+    } finally {
+      releaseTurn("main");
+    }
+    await fake.host.dispose();
+    assert.ok(
+      fake.logs.some((line) => line.includes("tab-b") && line.includes("main")),
+      `no busy line naming both tabs in: ${fake.logs.join(" | ")}`,
+    );
+  });
+});
+
 describe("prompt mode", () => {
   const SAFE_LINE = "I couldn't make Muse ask before running commands, so I've stopped to be safe.";
 

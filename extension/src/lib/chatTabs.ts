@@ -2,6 +2,7 @@
 // queue. No VS Code imports.
 
 import { randomBytes } from "node:crypto";
+import type { TranscriptEntry } from "./session.js";
 
 /** The first chat's tab: it resumes the saved session and feeds the sidebar. */
 export const MAIN_TAB_UID = "main";
@@ -24,6 +25,8 @@ export interface TabSeed {
   topic?: string;
   /** A forked tab catches up like a switched chat; a revive trusts its clock. */
   catchUp?: boolean;
+  /** A forked tab replays the source chat's transcript at fork time. */
+  transcript?: TranscriptEntry[];
 }
 
 /** The stored per-tab record: session id plus the header label. */
@@ -31,6 +34,35 @@ export interface TabRecord {
   session?: string;
   labelId?: string;
   topic?: string;
+}
+
+/** Pre-tabs storage keys, now the first tab's keys. */
+export const SESSION_STORE_KEY = "metaBetta.sessionId";
+export const TRANSCRIPT_STORE_KEY = "metaBetta.transcript";
+
+/**
+ * Per-tab storage key. The first tab keeps the pre-tabs key (no migration);
+ * other tabs suffix their own.
+ */
+export function tabStorageKey(base: string, uid: string): string {
+  return uid === MAIN_TAB_UID ? base : `${base}.${uid}`;
+}
+
+/**
+ * Keys a failed session resume forgets: the dead id only. The stored
+ * transcript and clock survive as the fallback — never start fresh while
+ * old data exists.
+ */
+export function clearedKeysOnFailedResume(uid: string): string[] {
+  return uid === MAIN_TAB_UID ? [SESSION_STORE_KEY] : [];
+}
+
+/**
+ * Only the first tab adopts the pre-tabs label, and only when it has no
+ * seed of its own. A fresh tab always starts blank with its own label.
+ */
+export function adoptsStoredLabel(uid: string, seed?: TabSeed): boolean {
+  return uid === MAIN_TAB_UID && !seed?.labelId;
 }
 
 export interface LegacyChat {
@@ -76,6 +108,84 @@ export function cleanTabRecords(value: unknown): Record<string, TabRecord> {
     }
   }
   return cleaned;
+}
+
+/** An open or recent chat that a message might refer to. */
+export interface PeekCandidate {
+  uid: string;
+  /** Short session id ("58f2"). */
+  id: string;
+  /** Full header label ("Session 58f2 · todo"). */
+  label: string;
+  topic: string;
+}
+
+/**
+ * The chat a message asks to peek at, if any: an explicit session label or
+ * topic first, else "the other tab/chat" (exactly one other), else
+ * "earlier/yesterday's chat" (the first chat). Never the sender itself,
+ * never a guess between several.
+ */
+export function findPeekTarget(
+  text: string,
+  selfUid: string,
+  chats: PeekCandidate[],
+): PeekCandidate | undefined {
+  const lower = text.toLowerCase();
+  const others = chats.filter((chat) => chat.uid !== selfUid);
+  const explicit = others.find(
+    (chat) =>
+      (chat.topic.length >= 3 && lower.includes(chat.topic.toLowerCase())) ||
+      (chat.id !== "" && new RegExp(`\\b${chat.id.toLowerCase()}\\b`).test(lower)),
+  );
+  if (explicit) {
+    return explicit;
+  }
+  if (/\bother\s+(tab|chat)\b/.test(lower) && others.length === 1) {
+    return others[0];
+  }
+  if (/\b(earlier|yesterday'?s?)\s+chat\b/.test(lower)) {
+    return others.find((chat) => chat.uid === MAIN_TAB_UID);
+  }
+  return undefined;
+}
+
+const PEEK_LINE_LIMIT = 400;
+const PEEK_BLOCK_LIMIT = 4000;
+
+/**
+ * The peek background: the other chat's last entries as You/Muse lines,
+ * newest kept when over budget.
+ */
+export function formatPeekBackground(label: string, entries: TranscriptEntry[]): string {
+  const lines: string[] = [];
+  for (const entry of entries) {
+    if (entry.role !== "user" && entry.role !== "assistant") {
+      continue;
+    }
+    const text = entry.text.replace(/\s+/g, " ").trim();
+    if (!text) {
+      continue;
+    }
+    lines.push(`${entry.role === "user" ? "You" : "Muse"}: ${text.slice(0, PEEK_LINE_LIMIT)}`);
+  }
+  while (lines.join("\n").length > PEEK_BLOCK_LIMIT && lines.length > 1) {
+    lines.shift();
+  }
+  return (
+    `[Also relevant: the last messages of '${label}'. Use them only as background for this turn.]\n` +
+    lines.join("\n")
+  );
+}
+
+/**
+ * One output-channel line per queue retry: the tab, what's waiting and who
+ * holds the lock.
+ */
+export function queueRetryNote(uid: string, waiting: number, holder: string | undefined): string {
+  return holder === undefined
+    ? `queue: ${uid} retrying (${waiting} waiting)`
+    : `queue: ${uid} retrying (${waiting} waiting, held by ${holder})`;
 }
 
 /** Typed messages waiting for the lock, oldest first. */
