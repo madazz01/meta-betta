@@ -39,6 +39,8 @@
   let boxLockText = "";
   const defaultPlaceholder = input.placeholder;
   const assistantEls = new Map();
+  const assistantMarkdown = new Map();
+  let ctxMenuEl = null;
   const thinkingEls = new Map();
   const toolEls = new Map();
   const pickerQueue = [];
@@ -295,6 +297,19 @@
         vscode.postMessage({ type: "forkMessage", id });
       });
       meta.appendChild(fork);
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "copy-btn";
+      copy.textContent = "Copy";
+      copy.title = "Copy this reply";
+      copy.addEventListener("click", async () => {
+        await copyText(assistantMarkdown.get(id) || "");
+        copy.textContent = "Copied";
+        setTimeout(() => {
+          copy.textContent = "Copy";
+        }, 1200);
+      });
+      meta.appendChild(copy);
       reply.appendChild(body);
       reply.appendChild(meta);
       stepParent().appendChild(reply);
@@ -302,7 +317,11 @@
     }
     const nudge = findNudge(text);
     const bodyText = nudge ? text.replace(nudge.paragraph, "").trim() : text;
-    reply.querySelector(".assistant-text").innerHTML = renderReply(bodyText);
+    if (assistantMarkdown.get(id) !== bodyText) {
+      // Same text, no re-render: rebuilding the HTML would drop your selection.
+      reply.querySelector(".assistant-text").innerHTML = renderReply(bodyText);
+      assistantMarkdown.set(id, bodyText);
+    }
     reply.style.display = nudge && !bodyText ? "none" : "";
     if (nudge) {
       upsertNudgeCard(id, nudge);
@@ -1215,6 +1234,35 @@
     }
   }
 
+  // Right-click Copy: webviews show no menu of their own, so selected chat
+  // text gets one small floating row. The text is captured up front, so the
+  // click that follows can't lose the selection.
+  function closeCtxMenu() {
+    if (ctxMenuEl) {
+      ctxMenuEl.remove();
+      ctxMenuEl = null;
+    }
+  }
+
+  function openCtxMenu(x, y, text) {
+    closeCtxMenu();
+    ctxMenuEl = document.createElement("div");
+    ctxMenuEl.className = "ctx-menu";
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "ctx-item";
+    item.textContent = "Copy";
+    item.addEventListener("click", async () => {
+      await copyText(text);
+      closeCtxMenu();
+    });
+    ctxMenuEl.appendChild(item);
+    document.body.appendChild(ctxMenuEl);
+    const box = ctxMenuEl.getBoundingClientRect();
+    ctxMenuEl.style.left = `${Math.max(4, Math.min(x, window.innerWidth - box.width - 4))}px`;
+    ctxMenuEl.style.top = `${Math.max(4, Math.min(y, window.innerHeight - box.height - 4))}px`;
+  }
+
   function clearChat() {
     dropCatchingUp();
     closeTurn();
@@ -1222,6 +1270,7 @@
     lastStampAt = 0;
     messagesEl.replaceChildren();
     assistantEls.clear();
+    assistantMarkdown.clear();
     thinkingEls.clear();
     toolEls.clear();
     pickerQueue.length = 0;
@@ -1276,6 +1325,9 @@
 
   // A popup closes on Escape or a click anywhere outside it.
   document.addEventListener("click", (event) => {
+    if (ctxMenuEl && !ctxMenuEl.contains(event.target)) {
+      closeCtxMenu();
+    }
     if (popupEl.hidden || popupEl.contains(event.target)) {
       return;
     }
@@ -1290,8 +1342,11 @@
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !popupEl.hidden) {
-      closePopup();
+    if (event.key === "Escape") {
+      closeCtxMenu();
+      if (!popupEl.hidden) {
+        closePopup();
+      }
     }
   });
 
@@ -1323,6 +1378,18 @@
     event.preventDefault();
     vscode.postMessage({ type: "openLink", url: anchor.getAttribute("href") });
   });
+
+  messagesEl.addEventListener("contextmenu", (event) => {
+    const selection = window.getSelection();
+    const text = selection ? selection.toString() : "";
+    if (!selection || selection.isCollapsed || text === "" || !messagesEl.contains(selection.anchorNode)) {
+      return;
+    }
+    event.preventDefault();
+    openCtxMenu(event.clientX, event.clientY, text);
+  });
+
+  messagesEl.addEventListener("scroll", closeCtxMenu);
 
   input.addEventListener("keydown", (event) => {
     if (slashOpen && (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === "Escape")) {

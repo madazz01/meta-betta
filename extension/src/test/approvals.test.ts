@@ -211,6 +211,7 @@ describe("isReadOnlyStage", () => {
     assert.equal(isReadOnlyStage(["Get-Content"], root), true);
     assert.equal(isReadOnlyStage(["Get-Content", "C:\\Users\\x\\.ssh\\id_rsa"], root), false);
     assert.equal(isReadOnlyStage(["cat", "..\\..\\secret"], root), false);
+    assert.equal(isReadOnlyStage(["cat", "/etc/passwd"], root), false);
     assert.equal(isReadOnlyStage(["Test-Path", "D:\\other\\x"], root), false);
   });
 });
@@ -410,7 +411,8 @@ describe("autoAllowStage", () => {
   it("allows builds, tests, scripts and git inside the workspace", () => {
     assert.equal(autoAllowStage(["npm", "test"], root), true);
     assert.equal(autoAllowStage(["npm", "run", "build"], root), true);
-    assert.equal(autoAllowStage(["npx", "jest", "--watch"], root), true);
+    assert.equal(autoAllowStage(["npm", "start"], root), true);
+    assert.equal(autoAllowStage(["npm", "build"], root), true);
     assert.equal(autoAllowStage(["node", "script.js"], root), true);
     assert.equal(autoAllowStage(["git", "status"], root), true);
     assert.equal(autoAllowStage(["git", "commit", "-m", "done"], root), true);
@@ -445,6 +447,60 @@ describe("autoAllowStage", () => {
     assert.equal(autoAllowStage(["npm", "test", ">", "out.log"], root, "npm test > out.log"), true);
     assert.equal(autoAllowStage(["npm", "test", ">", "C:\\x\\out.log"], root, "npm test > C:\\x\\out.log"), false);
     assert.equal(autoAllowStage(["npm", "test"], root, "npm test > out.log"), false);
+  });
+
+  it("asks for the proven Auto holes", () => {
+    assert.equal(autoAllowStage(["Remove-Item", "-Recurse", "-Force", "/Users/madaz"], root), false);
+    assert.equal(autoAllowStage(["Remove-Item", "/"], root), false);
+    assert.equal(autoAllowStage(["Remove-Item"], root), false);
+    assert.equal(autoAllowStage(["Remove-Item", "-Recurse", "-Force"], root), false);
+    assert.equal(autoAllowStage(["node", "-e", "console.log(1)"], root), false);
+    assert.equal(autoAllowStage(["node", "--eval", "console.log(1)"], root), false);
+    assert.equal(autoAllowStage(["npx", "some-package"], root), false);
+    assert.equal(autoAllowStage(["npx", "jest", "--watch"], root), false);
+    assert.equal(autoAllowStage(["git", "-c", "x=y", "push"], root), false);
+    assert.equal(autoAllowStage(["git", "config", "--global", "user.name", "x"], root), false);
+  });
+
+  it("auto-allows the proven safe commands", () => {
+    assert.equal(autoAllowStage(["npm", "test"], root), true);
+    assert.equal(autoAllowStage(["node", "build.js"], root), true);
+    assert.equal(autoAllowStage(["Remove-Item", "-Recurse", "notes.txt"], root), true);
+    assert.equal(autoAllowStage(["git", "commit", "-m", "x"], root), true);
+  });
+
+  it("asks for node without an inside script, and npm outside its list", () => {
+    assert.equal(autoAllowStage(["node"], root), false);
+    assert.equal(autoAllowStage(["node", "--version"], root), false);
+    assert.equal(autoAllowStage(["node", "-r", "ts-node/register", "build.js"], root), false);
+    assert.equal(autoAllowStage(["node", "C:\\x\\build.js"], root), false);
+    assert.equal(autoAllowStage(["npm"], root), false);
+    assert.equal(autoAllowStage(["npm", "run"], root), false);
+    assert.equal(autoAllowStage(["npm", "ci"], root), false);
+    assert.equal(autoAllowStage(["npm", "exec", "x"], root), false);
+  });
+
+  it("asks for git escapes, and allows local git", () => {
+    assert.equal(autoAllowStage(["git", "clone", "https://example.com/r.git"], root), false);
+    assert.equal(autoAllowStage(["git", "remote", "add", "origin", "https://example.com/r.git"], root), false);
+    assert.equal(autoAllowStage(["git", "remote", "set-url", "origin", "https://example.com/r.git"], root), false);
+    assert.equal(autoAllowStage(["git", "submodule", "update"], root), false);
+    assert.equal(autoAllowStage(["git", "config", "--system", "user.name", "x"], root), false);
+    assert.equal(autoAllowStage(["git", "-c", "core.pager=cat", "status"], root), false);
+    assert.equal(autoAllowStage(["git", "-C", "C:\\other", "status"], root), false);
+    assert.equal(autoAllowStage(["git", "-C", "sub", "status"], root), true);
+    assert.equal(autoAllowStage(["git", "config", "user.name", "x"], root), true);
+    assert.equal(autoAllowStage(["git", "remote", "-v"], root), true);
+  });
+
+  it("asks for slash-switch tools, and deletes past the first stage", () => {
+    assert.equal(autoAllowStage(["robocopy", "a", "b", "/MIR"], root), false);
+    assert.equal(autoAllowStage(["xcopy", "a", "b"], root), false);
+    assert.equal(autoAllowStage(["cmd", "/c", "dir"], root), false);
+    assert.equal(autoAllowStage(["Copy-Item", "a.txt", "b.txt"], root, undefined, false), false);
+    assert.equal(autoAllowStage(["Remove-Item", "notes.txt"], root, undefined, false), false);
+    assert.equal(autoAllowStage(["Remove-Item", "notes.txt"], root, undefined, true), true);
+    assert.equal(autoAllowStage(["npm", "test"], root, undefined, false), true);
   });
 });
 

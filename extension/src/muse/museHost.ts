@@ -1262,10 +1262,13 @@ export class MuseHost {
     if (once === undefined) {
       return undefined;
     }
-    for (const stage of stages) {
+    for (const [index, stage] of stages.entries()) {
       const quiet =
         !commandHasWrite(request.subject.command) && isReadOnlyStage(stage.argv, this.workspaceRoot);
-      if (!quiet && !autoAllowStage(stage.argv, this.workspaceRoot, request.subject.command)) {
+      if (
+        !quiet &&
+        !autoAllowStage(stage.argv, this.workspaceRoot, request.subject.command, index === 0)
+      ) {
         return undefined;
       }
     }

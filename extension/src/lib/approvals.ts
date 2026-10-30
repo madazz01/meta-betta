@@ -221,9 +221,7 @@ export function isReadOnlyStage(argv: string[], workspaceRoot: string): boolean 
   }
   return argv
     .slice(1)
-    .every(
-      (token) => token.startsWith("-") || token.startsWith("/") || insideDir(workspaceRoot, workspaceRoot, token),
-    );
+    .every((token) => token.startsWith("-") || insideDir(workspaceRoot, workspaceRoot, token));
 }
 
 export type BackupAction = { kind: "mkdir" } | { kind: "copy"; files: string[] };
@@ -257,10 +255,14 @@ export function backupAction(argv: string[], workspaceRoot: string): BackupActio
   return undefined;
 }
 
-/** Non-flag tokens after the command word, minus excused parameter values. */
+/**
+ * Non-flag tokens after the command word, minus excused parameter values.
+ * A leading `/` is a path (on Windows `/x` means `C:\x`), never a switch:
+ * none of this helper's callers take slash switches.
+ */
 function pathArgs(argv: string[], excused: (token: string) => boolean): string[] {
   return argv.slice(1).filter((token) => {
-    if (token.startsWith("-") || token.startsWith("/")) {
+    if (token.startsWith("-")) {
       return false;
     }
     return !excused(token);
@@ -318,6 +320,9 @@ function insideDir(workspaceRoot: string, root: string, candidate: string): bool
   return target === base || target.startsWith(`${base}${win32.sep}`);
 }
 
+/** The only tools whose `/x` tokens are switches; everywhere else `/x` is a path. */
+const SLASH_SWITCH_COMMANDS = new Set(["robocopy", "xcopy", "cmd"]);
+
 const STAGE_VERBS: Record<string, string> = {
   "remove-item": "delete",
   del: "delete",
@@ -346,12 +351,17 @@ const STAGE_VERBS: Record<string, string> = {
 
 const INSTALLERS = new Set(["npm", "pip", "pip3", "choco", "winget", "brew", "cargo", "apt", "apt-get"]);
 
-/** First non-flag token after the command word. */
-function firstPath(argv: string[]): string | undefined {
+/**
+ * First non-flag token after the command word. A leading `/` is a path
+ * except for slash-switch tools (robocopy, xcopy, cmd), where it starts a
+ * switch.
+ */
+function firstPath(argv: string[], slashSwitches = false): string | undefined {
   for (const token of argv.slice(1)) {
-    if (!token.startsWith("-") && !token.startsWith("/")) {
-      return token;
+    if (token.startsWith("-") || (slashSwitches && token.startsWith("/"))) {
+      continue;
     }
+    return token;
   }
   return undefined;
 }
@@ -383,7 +393,7 @@ export function describeStage(argv: string[]): string {
   }
   const verb = STAGE_VERBS[name];
   if (verb) {
-    const target = firstPath(argv);
+    const target = firstPath(argv, SLASH_SWITCH_COMMANDS.has(name));
     return target ? `${verb} ${win32.basename(target)}` : `${verb} something`;
   }
   const rest = argv[1] === undefined ? "" : ` ${argv[1]}`;
@@ -494,20 +504,82 @@ export function autoAllowedRow(description: string): string {
   return `✓ auto-allowed: ${description}`;
 }
 
-/** Installers and downloaders: Auto always asks for these. */
-const AUTO_ASK_COMMANDS = new Set(["irm", "iwr", "curl", "invoke-webrequest", "pip", "pip3", "winget", "choco"]);
+/**
+ * Installers, downloaders, package fetchers and slash-switch tools: Auto
+ * always asks for these. (`npx` can download; robocopy/xcopy/cmd take `/x`
+ * switches, so their tokens can't be read as plain paths.)
+ */
+const AUTO_ASK_COMMANDS = new Set([
+  "irm",
+  "iwr",
+  "curl",
+  "invoke-webrequest",
+  "pip",
+  "pip3",
+  "winget",
+  "choco",
+  "npx",
+  "robocopy",
+  "xcopy",
+  "cmd",
+]);
 
-/** `npm` subcommands that install; the rest (test, run, build…) stay automatic. */
-const NPM_INSTALL_SUBCOMMANDS = new Set(["install", "i", "add", "ci"]);
+/** The only `npm` subcommands Auto allows; `run` needs a script name. */
+const NPM_AUTO_SUBCOMMANDS = new Set(["test", "run", "run-script", "start", "build", "--version"]);
+
+/** `node` flags that run code from the command line instead of a file. */
+const NODE_EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print", "-r", "--require", "--import"]);
+
+/** Verbs that must name at least one explicit path, as the first stage. */
+const PATH_VERBS = new Set(["delete", "move", "rename", "copy"]);
 
 /**
- * Auto mode: allow this stage without asking? Builds, tests, node/npm/npx
- * scripts, git except push, and file edits/creates/deletes/moves — but only
- * when every path stays inside the workspace. Still asks for installs and
- * downloads, git push, outside paths, dynamic tokens, and anything it can't
- * parse. Pure: the host decides, the webview only shows the row.
+ * True when a git stage escapes the local workspace: pushing, cloning,
+ * touching remotes or submodules, machine-wide config, or `-c`/`-C`
+ * overrides (a `-C` inside the workspace is fine). Exact-token matches, so
+ * a commit message only trips it when a whole token equals one of these.
  */
-export function autoAllowStage(argv: string[], workspaceRoot: string, fullCommand?: string): boolean {
+function gitAsksStage(argv: string[], workspaceRoot: string): boolean {
+  const rest = argv.slice(1);
+  const words = rest.map((token) => token.toLowerCase());
+  if (words.includes("push") || words.includes("clone") || words.includes("submodule")) {
+    return true;
+  }
+  if (rest.includes("-c")) {
+    return true;
+  }
+  for (let index = 0; index < rest.length; index += 1) {
+    if (rest[index] === "-C") {
+      const dir = rest[index + 1];
+      if (dir === undefined || !insideDir(workspaceRoot, workspaceRoot, dir)) {
+        return true;
+      }
+    }
+  }
+  if (words.includes("config") && (words.includes("--global") || words.includes("--system"))) {
+    return true;
+  }
+  if (words.includes("remote") && (words.includes("add") || words.includes("set-url"))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Auto mode: allow this stage without asking? `npm` test/run/start/build,
+ * `node` with a script file, local git, and file edits/creates/deletes/
+ * moves — but only when every path stays inside the workspace. Still asks
+ * for installs and downloads, git escapes, outside paths (a leading `/` is
+ * a path, so `/` is the drive root), dynamic tokens, deletes/moves/renames/
+ * copies without an explicit path or past the first stage, and anything it
+ * can't parse. Pure: the host decides, the webview only shows the row.
+ */
+export function autoAllowStage(
+  argv: string[],
+  workspaceRoot: string,
+  fullCommand?: string,
+  isFirstStage = true,
+): boolean {
   if (argv.length === 0 || workspaceRoot === "") {
     return false;
   }
@@ -520,16 +592,32 @@ export function autoAllowStage(argv: string[], workspaceRoot: string, fullComman
   if (name === "" || AUTO_ASK_COMMANDS.has(name)) {
     return false;
   }
-  if (name === "npm" && NPM_INSTALL_SUBCOMMANDS.has((argv[1] ?? "").toLowerCase())) {
-    return false;
+  if (name === "npm") {
+    const sub = (argv[1] ?? "").toLowerCase();
+    if (!NPM_AUTO_SUBCOMMANDS.has(sub)) {
+      return false;
+    }
+    if ((sub === "run" || sub === "run-script") && argv[2] === undefined) {
+      return false;
+    }
   }
-  if (name === "git" && (argv[1] ?? "").toLowerCase() === "push") {
+  if (name === "node") {
+    const script = firstPath(argv);
+    if (script === undefined || !insideDir(workspaceRoot, workspaceRoot, script)) {
+      return false;
+    }
+    for (const token of argv.slice(1)) {
+      if (NODE_EVAL_FLAGS.has(token)) {
+        return false;
+      }
+    }
+  }
+  if (name === "git" && gitAsksStage(argv, workspaceRoot)) {
     return false;
   }
   const runnable =
     name === "node" ||
     name === "npm" ||
-    name === "npx" ||
     name === "git" ||
     Object.prototype.hasOwnProperty.call(STAGE_VERBS, name);
   if (!runnable) {
@@ -541,7 +629,11 @@ export function autoAllowStage(argv: string[], workspaceRoot: string, fullComman
       return false;
     }
   }
-  return pathArgs(argv, () => false).every((token) => insideDir(workspaceRoot, workspaceRoot, token));
+  const paths = pathArgs(argv, () => false);
+  if (PATH_VERBS.has(STAGE_VERBS[name] ?? "") && (paths.length === 0 || !isFirstStage)) {
+    return false;
+  }
+  return paths.every((token) => insideDir(workspaceRoot, workspaceRoot, token));
 }
 
 /** Auto mode: a file change goes through when its path stays inside the workspace. */
