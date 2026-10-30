@@ -335,11 +335,11 @@ body {
   display: none;
 }
 
-.turn:has(> .tool, > .thinking, > .assistant-reply) {
+.turn:has(.tool, .thinking, .steps, .assistant-reply) {
   padding-left: 16px;
 }
 
-.turn:has(> .tool, > .thinking, > .assistant-reply)::before {
+.turn:has(.tool, .thinking, .steps, .assistant-reply)::before {
   content: "";
   position: absolute;
   left: 5px;
@@ -352,12 +352,14 @@ body {
 
 .turn > .tool,
 .turn > .thinking,
+.turn > .steps,
 .turn > .assistant-reply {
   position: relative;
 }
 
 .turn > .tool::before,
 .turn > .thinking::before,
+.turn > .steps::before,
 .turn > .assistant-reply::before {
   content: "";
   position: absolute;
@@ -382,7 +384,10 @@ body {
 
 #status {
   min-height: 1em;
-  margin: 0;
+  margin: 0 auto;
+  width: 33vw;
+  min-width: min(560px, calc(100% - 32px));
+  max-width: calc(100% - 32px);
   color: var(--vscode-descriptionForeground);
   font-style: italic;
 }
@@ -503,6 +508,11 @@ body.vscode-light .pill {
   background-color: var(--mb-accent);
   color: #fff;
   outline: none;
+}
+
+/* Approvals: All — red while Muse runs without asking. */
+.pill.danger {
+  background-color: var(--vscode-errorForeground, #f85149);
 }
 
 #effort {
@@ -644,8 +654,29 @@ body.vscode-light .pill {
   font-size: 0.9em;
 }
 
+/* One muted line per turn's steps; click to see every row. */
+.steps {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.steps-summary {
+  cursor: pointer;
+}
+
+.steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0 2px 12px;
+}
+
 #composer-wrap {
   position: relative;
+  width: 33vw;
+  min-width: min(560px, calc(100% - 32px));
+  max-width: calc(100% - 32px);
+  margin: 0 auto;
 }
 
 #picker {

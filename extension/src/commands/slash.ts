@@ -124,6 +124,11 @@ export type EffortLevel = "quick" | "normal" | "deep";
 export const EFFORT_LEVELS: EffortLevel[] = ["quick", "normal", "deep"];
 export const EFFORT_LABELS: Record<EffortLevel, string> = { quick: "Quick", normal: "Normal", deep: "Deep" };
 
+export type ApprovalChoice = "ask" | "auto" | "all";
+
+export const APPROVAL_CHOICES: ApprovalChoice[] = ["ask", "auto", "all"];
+export const APPROVAL_LABELS: Record<ApprovalChoice, string> = { ask: "Ask", auto: "Auto", all: "All" };
+
 /** Everything a slash command can do: cards, notices, chats, Muse calls. */
 export interface SlashContext {
   showCard(card: CardSpec, handlers?: CardHandlers): string;
@@ -219,6 +224,11 @@ export function cleanGoalInfo(value: unknown): GoalInfo | null {
 /** Validate a stored effort level; junk falls back to normal. */
 export function cleanEffortLevel(value: unknown): EffortLevel {
   return value === "quick" || value === "normal" || value === "deep" ? value : "normal";
+}
+
+/** Validate a stored approvals choice; junk (and never-stored All) falls back to auto. */
+export function cleanApprovalChoice(value: unknown): "ask" | "auto" {
+  return value === "ask" || value === "auto" ? value : "auto";
 }
 
 export type PluginSpec =

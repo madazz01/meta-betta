@@ -36,11 +36,15 @@ import {
   allowedOnceRow,
   alwaysAllowedRow,
   approvalCard,
+  autoAllowedRow,
+  autoAllowFile,
+  autoAllowStage,
   backedUpRow,
   backupAction,
   choiceHint,
   commandHasWrite,
   currentStage,
+  describeFileAccess,
   describeStage,
   findStageChoice,
   isReadOnlyStage,
@@ -50,10 +54,11 @@ import {
   rejectedRow,
   rememberedDecision,
   safestChoiceId,
+  stageGroup,
   stageLabel,
   type RememberedDecision,
 } from "../lib/approvals.js";
-import { historyEvent, isSandboxBugFailure, reasoningText, toolRowText } from "../lib/items.js";
+import { historyEvent, isSandboxBugFailure, reasoningText, toolRowText, type StepGroup } from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
 import { classifySpawnError, parseSandboxReady, shortReason, type SpawnProblem } from "../lib/startup.js";
 import type { SessionUsageTotals } from "../lib/usage.js";
@@ -90,7 +95,7 @@ export type MuseHostEvent =
   | { type: "user"; text: string; at?: number }
   | { type: "assistant"; id: string; text: string; at?: number }
   | { type: "thinking"; id: string; text: string }
-  | { type: "tool"; id: string; text: string; done: boolean }
+  | { type: "tool"; id: string; text: string; done: boolean; group?: StepGroup; failed?: boolean }
   | { type: "status"; text: string }
   | PickerEvent
   | { type: "approvalDone"; id: string }
@@ -119,6 +124,12 @@ export interface MuseHostOptions {
    * notices. Unset keeps the old notices (tests, side runs).
    */
   onSetupNeeded?: (info: SetupNeededInfo) => void;
+  /** Ask shows the picker; Auto answers allow-once for stages that pass the rules. */
+  approvalMode?: "ask" | "auto";
+  /** A session the tab left in allowAll (after a reload): revert it quietly. */
+  approvalAllLeftOn?: string;
+  /** Called after the leftover allowAll is reverted, so the tab clears its flag. */
+  onApprovalAllReverted?: () => void;
   emit: (event: MuseHostEvent) => void;
   /**
    * Show the approval picker and resolve with the picked choice, or undefined
@@ -245,6 +256,9 @@ export class MuseHost {
   private workspaceRoot = "";
   private backupSeq = 0;
   private quietSeq = 0;
+  private autoSeq = 0;
+  /** The session currently running wild in allowAll, if this tab chose All. */
+  private approvalAllFor: string | undefined;
   private recapWaiters = new Map<
     string,
     {
@@ -408,6 +422,10 @@ export class MuseHost {
     if (!this.sandboxOff() || this.promptModeFor === sessionId) {
       return true;
     }
+    // All is a deliberate choice: don't silently switch it back here.
+    if (this.approvalAllFor === sessionId) {
+      return true;
+    }
     try {
       const result = await this.connection?.command("session/setApprovalMode", {
         sessionId,
@@ -424,6 +442,27 @@ export class MuseHost {
       this.log(`approval mode: setApprovalMode failed: ${shortReason(error)}`);
       return false;
     }
+  }
+
+  /**
+   * A reload while All was on: the UI is back to Auto but the resumed
+   * session still allows everything. Revert it quietly; failures just log,
+   * and the next turn's confirm retries.
+   */
+  private async revertLeftoverAll(sessionId: string): Promise<void> {
+    if (this.options.approvalAllLeftOn !== sessionId) {
+      return;
+    }
+    try {
+      await this.connection?.command("session/setApprovalMode", {
+        sessionId,
+        mode: "promptUnmatched",
+      });
+      this.promptModeFor = sessionId;
+    } catch {
+      this.log("approval mode: leftover allowAll revert failed; retrying on next turn");
+    }
+    this.options.onApprovalAllReverted?.();
   }
 
   /** Panel-side stop: drop late events and report "Stopped." at once. */
@@ -824,6 +863,42 @@ export class MuseHost {
     );
   }
 
+  /** Approvals All: this tab's session stops asking, after the panel confirmed. */
+  public async setApprovalAll(workspaceRoot: string): Promise<void> {
+    const { session, connection } = await this.useConnection(workspaceRoot);
+    const result = asRecord(
+      await connection.command("session/setApprovalMode", {
+        sessionId: session.sessionId,
+        mode: "allowAll",
+      }),
+    );
+    if (!result || asString(asRecord(result.effectiveMode)?.mode) !== "allowAll") {
+      throw new Error("Muse didn't take it.");
+    }
+    this.approvalAllFor = session.sessionId;
+  }
+
+  /** Back to asking: re-select promptUnmatched and check it was confirmed. */
+  public async clearApprovalAll(workspaceRoot: string): Promise<void> {
+    const { session, connection } = await this.useConnection(workspaceRoot);
+    const result = asRecord(
+      await connection.command("session/setApprovalMode", {
+        sessionId: session.sessionId,
+        mode: "promptUnmatched",
+      }),
+    );
+    if (!result || asString(asRecord(result.effectiveMode)?.mode) !== "promptUnmatched") {
+      throw new Error("Muse didn't take it.");
+    }
+    this.approvalAllFor = undefined;
+    this.promptModeFor = session.sessionId;
+  }
+
+  /** Ask or Auto answer locally in decideApproval; All lives on the server. */
+  public setLocalApprovalMode(mode: "ask" | "auto"): void {
+    this.options.approvalMode = mode;
+  }
+
   private emit(event: MuseHostEvent): void {
     this.options.emit(event);
   }
@@ -954,6 +1029,7 @@ export class MuseHost {
     if (action === "resume-saved" && session) {
       this.session = session;
       this.options.sessionStore?.saveId(session.sessionId);
+      await this.revertLeftoverAll(session.sessionId);
       // Best effort here; send() refuses the turn unless this confirms.
       await this.confirmPromptMode(session.sessionId);
       return session;
@@ -1145,13 +1221,88 @@ export class MuseHost {
               id: `backup-${approvalId}-${this.backupSeq++}`,
               text: backedUpRow(backup.files),
               done: true,
+              group: "edit",
             });
           }
           return this.answerQuietly(approvalId, once);
         }
       }
     }
+    if (this.options.approvalMode === "auto" && shell) {
+      const auto = this.tryAutoStages(request, approvalId, pending, stages, argv);
+      if (auto) {
+        return auto;
+      }
+    }
+    if (this.options.approvalMode === "auto" && request.subject.kind === "fileAccess") {
+      const auto = this.tryAutoFile(request, approvalId);
+      if (auto) {
+        return auto;
+      }
+    }
     return this.askPicker(request, pending, { shell, stages, argv });
+  }
+
+  /**
+   * Auto mode, shell: every stage must pass the rules, but only the stage
+   * being answered shows a row (the server asks per stage). Read-only
+   * stages ride along through the quiet flush.
+   */
+  private tryAutoStages(
+    request: ApprovalRequestParams,
+    approvalId: string,
+    pending: PendingCommand,
+    stages: { argv: string[] }[],
+    argv: string[],
+  ): Promise<ApprovalAnswer> | undefined {
+    if (this.workspaceRoot === "" || stages.length === 0) {
+      return undefined;
+    }
+    const once = findStageChoice(request.availableChoices, "once");
+    if (once === undefined) {
+      return undefined;
+    }
+    for (const stage of stages) {
+      const quiet =
+        !commandHasWrite(request.subject.command) && isReadOnlyStage(stage.argv, this.workspaceRoot);
+      if (!quiet && !autoAllowStage(stage.argv, this.workspaceRoot, request.subject.command)) {
+        return undefined;
+      }
+    }
+    if (!commandHasWrite(request.subject.command) && isReadOnlyStage(argv, this.workspaceRoot)) {
+      pending.lookedAt.push(stageLabel(argv));
+      this.armQuietFlush(approvalId, pending);
+    } else {
+      this.emit({
+        type: "tool",
+        id: `auto-${approvalId}-${this.autoSeq++}`,
+        text: autoAllowedRow(describeStage(argv)),
+        done: true,
+        group: stageGroup(argv),
+      });
+    }
+    return this.answerQuietly(approvalId, once);
+  }
+
+  /** Auto mode, file changes: inside the workspace goes through quietly. */
+  private tryAutoFile(request: ApprovalRequestParams, approvalId: string): Promise<ApprovalAnswer> | undefined {
+    if (this.workspaceRoot === "" || request.subject.kind !== "fileAccess") {
+      return undefined;
+    }
+    const once = findStageChoice(request.availableChoices, "once");
+    const target = request.subject.path;
+    if (once === undefined || !target || !autoAllowFile(target, this.workspaceRoot)) {
+      return undefined;
+    }
+    const access = (request.subject.access ?? "").toLowerCase();
+    this.emit({
+      type: "tool",
+      id: `auto-${approvalId}-${this.autoSeq++}`,
+      text: autoAllowedRow(describeFileAccess(access, target)),
+      done: true,
+      group: access === "read" ? "read" : "edit",
+    });
+    return this.answerQuietly(approvalId, once);
   }
 
   /** Answer without asking; the panel never sees this stage. */
@@ -1197,7 +1348,13 @@ export class MuseHost {
             : memory === "reject"
               ? rejectedRow(description, feedback)
               : allowedOnceRow(description);
-        this.emit({ type: "tool", id: `approval-${approvalId}`, text: row, done: true });
+        this.emit({
+          type: "tool",
+          id: `approval-${approvalId}`,
+          text: row,
+          done: true,
+          group: hasStage ? stageGroup(view.argv) : "other",
+        });
         resolve(feedback === undefined ? { choiceId } : { choiceId, feedback });
         this.emit({ type: "approvalDone", id: approvalId });
       };
@@ -1276,6 +1433,7 @@ export class MuseHost {
       id: `looked-${approvalId}-${this.quietSeq++}`,
       text: lookedAtRow(labels),
       done: true,
+      group: "read",
     });
   }
 
@@ -1376,7 +1534,14 @@ export class MuseHost {
         if (row.failed && isSandboxBugFailure(item.failureReason)) {
           this.sandboxBugNoted = true;
         }
-        this.emit({ type: "tool", id: item.itemId, text: row.text, done: row.done });
+        this.emit({
+          type: "tool",
+          id: item.itemId,
+          text: row.text,
+          done: row.done,
+          group: row.group,
+          ...(row.failed ? { failed: true } : {}),
+        });
       }
     }
   }

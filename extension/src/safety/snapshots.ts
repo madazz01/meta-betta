@@ -24,6 +24,29 @@ export class NoGitError extends Error {
   }
 }
 
+/** The repo's HEAD sha, or undefined outside a repo (or when git fails). */
+export async function readGitHead(gitBin: string, cwd: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync(gitBin, ["rev-parse", "HEAD"], { cwd });
+    const sha = stdout.trim();
+    return /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when a turn moved the repo HEAD: it made commits. Unknown reads never count. */
+export function gitHeadMoved(before: string | undefined, after: string | undefined): boolean {
+  return before !== undefined && after !== undefined && before !== after;
+}
+
+/** The undo confirm's extra line when the turn also committed, if it did. */
+export function undoCommitWarning(committed: boolean | undefined): string | undefined {
+  return committed === true
+    ? "This reply also made git commits. Undo puts the files back, but the commits stay in git history."
+    : undefined;
+}
+
 export interface ChangedFile {
   /** Work-tree relative, forward slashes. */
   path: string;

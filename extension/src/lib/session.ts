@@ -15,7 +15,7 @@ export function decideSession(savedId: string | undefined, resumeSucceeded: bool
 }
 
 export interface TranscriptEntry {
-  role: "user" | "assistant" | "undo" | "nudge";
+  role: "user" | "assistant" | "undo" | "nudge" | "tool" | "thinking";
   text: string;
   /** Undo button or nudge card id (undo/nudge entries only). */
   id?: string;
@@ -23,6 +23,10 @@ export interface TranscriptEntry {
   at?: number;
   /** Which nudge button was pressed (nudge entries only). */
   answer?: "show" | "notnow";
+  /** Step-group bucket (tool entries only); a fork replays the same groups. */
+  group?: string;
+  /** A failed tool row replays on its own, never folded (tool entries only). */
+  failed?: boolean;
 }
 
 const TRANSCRIPT_LIMIT = 20;
@@ -34,6 +38,8 @@ export interface TranscriptEventView {
   id?: string;
   at?: number;
   answer?: string;
+  group?: string;
+  failed?: boolean;
 }
 
 /** The last messages, Undo buttons and nudge answers, bounded for storage. */
@@ -67,6 +73,14 @@ export function cleanTranscript(value: unknown): TranscriptEntry[] {
         kept.push({ role: "undo", text: "", id: entry.id });
       } else if (entry.role === "nudge") {
         kept.push({ role: "nudge", text: "", id: entry.id, answer: entry.answer });
+      } else if (entry.role === "tool" || entry.role === "thinking") {
+        kept.push({
+          role: entry.role,
+          text: entry.text.slice(0, TEXT_LIMIT),
+          ...(typeof entry.id === "string" && entry.id !== "" ? { id: entry.id } : {}),
+          ...(typeof entry.group === "string" && entry.group !== "" ? { group: entry.group } : {}),
+          ...(entry.failed === true ? { failed: true } : {}),
+        });
       } else {
         kept.push({
           role: entry.role,
@@ -92,7 +106,45 @@ function isTranscriptEntry(value: unknown): value is TranscriptEntry {
       typeof entry.id === "string" && entry.id !== "" && (entry.answer === "show" || entry.answer === "notnow")
     );
   }
-  return (entry.role === "user" || entry.role === "assistant") && typeof entry.text === "string";
+  return (
+    (entry.role === "user" ||
+      entry.role === "assistant" ||
+      entry.role === "tool" ||
+      entry.role === "thinking") &&
+    typeof entry.text === "string"
+  );
+}
+
+const FORK_LIMIT = 100;
+
+/**
+ * A fork seed from live history: both sides plus step rows, so the fork tab
+ * replays the full source transcript. Notices, cards and internals stay out.
+ */
+export function buildForkTranscript(events: readonly TranscriptEventView[]): TranscriptEntry[] {
+  const kept: TranscriptEntry[] = [];
+  for (const event of events) {
+    if ((event.type === "user" || event.type === "assistant") && event.text) {
+      kept.push({
+        role: event.type,
+        text: event.text.slice(0, TEXT_LIMIT),
+        ...(typeof event.at === "number" && Number.isFinite(event.at) ? { at: event.at } : {}),
+      });
+    } else if ((event.type === "tool" || event.type === "thinking") && event.text) {
+      kept.push({
+        role: event.type,
+        text: event.text.slice(0, TEXT_LIMIT),
+        ...(typeof event.id === "string" && event.id !== "" ? { id: event.id } : {}),
+        ...(typeof event.group === "string" && event.group !== "" ? { group: event.group } : {}),
+        ...(event.failed === true ? { failed: true } : {}),
+      });
+    } else if (event.type === "undo" && event.id) {
+      kept.push({ role: "undo", text: "", id: event.id });
+    } else if (event.type === "nudgeAnswered" && event.id && (event.answer === "show" || event.answer === "notnow")) {
+      kept.push({ role: "nudge", text: "", id: event.id, answer: event.answer });
+    }
+  }
+  return kept.slice(-FORK_LIMIT);
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -191,6 +243,8 @@ export interface StoredUndo {
   undone: boolean;
   /** Muse session id; anchors only match replays of the same session. */
   session?: string;
+  /** The turn also made git commits; undo puts files back but commits stay. */
+  committed?: boolean;
 }
 
 /** Stored undo targets are capped: older snapshots are pruned away anyway. */
@@ -224,6 +278,7 @@ function cleanUndo(value: unknown): StoredUndo | undefined {
     anchor?: unknown;
     undone?: unknown;
     session?: unknown;
+    committed?: unknown;
   };
   if (
     typeof entry.id !== "string" ||
@@ -265,6 +320,7 @@ function cleanUndo(value: unknown): StoredUndo | undefined {
     anchor: entry.anchor as number,
     undone: entry.undone,
     ...(typeof entry.session === "string" ? { session: entry.session } : {}),
+    ...(entry.committed === true ? { committed: true } : {}),
   };
 }
 

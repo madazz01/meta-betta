@@ -11,7 +11,10 @@ import {
   findGitBin,
   formatUndoTime,
   gitCandidates,
+  gitHeadMoved,
   LARGE_FILE_BYTES,
+  readGitHead,
+  undoCommitWarning,
   NoGitError,
   ShadowSnapshots,
 } from "../safety/snapshots.js";
@@ -276,6 +279,43 @@ describe("no git", () => {
         gitBin: "/nonexistent-git-binary",
       });
       await assert.rejects(shots.snapshot("before turn"), NoGitError);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe("commit detection", () => {
+  it("notices when HEAD moved, never on unknown reads", () => {
+    assert.equal(gitHeadMoved("a".repeat(40), "b".repeat(40)), true);
+    assert.equal(gitHeadMoved("a".repeat(40), "a".repeat(40)), false);
+    assert.equal(gitHeadMoved(undefined, "b".repeat(40)), false);
+    assert.equal(gitHeadMoved("a".repeat(40), undefined), false);
+    assert.equal(gitHeadMoved(undefined, undefined), false);
+  });
+
+  it("warns plainly, only when the turn committed", () => {
+    assert.equal(
+      undoCommitWarning(true),
+      "This reply also made git commits. Undo puts the files back, but the commits stay in git history.",
+    );
+    assert.equal(undoCommitWarning(false), undefined);
+    assert.equal(undoCommitWarning(undefined), undefined);
+  });
+
+  it("reads HEAD inside a repo, nothing outside", needsGit, async () => {
+    const { work, cleanup } = await sandbox();
+    try {
+      assert.equal(await readGitHead("git", work), undefined);
+      await userGit(work, ["init", "-q"]);
+      await userGit(work, ["config", "user.email", "test@example.com"]);
+      await userGit(work, ["config", "user.name", "Test"]);
+      await writeFile(join(work, "a.txt"), "hi");
+      await userGit(work, ["add", "a.txt"]);
+      await userGit(work, ["commit", "-qm", "one"]);
+      const head = await readGitHead("git", work);
+      assert.match(head ?? "", /^[0-9a-f]{40}$/i);
+      assert.equal(await readGitHead("git-not-a-real-binary", work), undefined);
     } finally {
       await cleanup();
     }

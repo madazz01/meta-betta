@@ -26,6 +26,7 @@ import {
   greetingName,
   isBackupTargetSafe,
   isGreetingMessage,
+  isJobFirstMessage,
   isLabelTaken,
   isStarterMe,
   LIVE_LABEL_TTL_MS,
@@ -402,6 +403,25 @@ describe("isGreetingMessage", () => {
     }
     for (const job of ["use the shell to delete todo.txt", "morning, delete todo.txt", "continue working on X", ""]) {
       assert.equal(isGreetingMessage(job), false, job);
+    }
+  });
+});
+
+describe("isJobFirstMessage", () => {
+  it("spots a job first, not a greeting or a name", () => {
+    for (const job of [
+      "delete todo.txt",
+      "build 09",
+      "please add tests",
+      "How do I run this?",
+      "what does this file do?",
+      "can you fix the login page",
+      "I'm working on a login page and the button does nothing",
+    ]) {
+      assert.equal(isJobFirstMessage(job), true, job);
+    }
+    for (const notJob of ["hi", "hello!", "good morning", "bryan", "Bryan Adams", "I'm bryan", "call me Al", "no", "skip", ""]) {
+      assert.equal(isJobFirstMessage(notJob), false, notJob);
     }
   });
 });
@@ -880,16 +900,18 @@ describe("front door rule 10", () => {
     assert.ok(FRONT_DOOR_SECTION.includes("when:"));
   });
 
-  it("leads with the top five, pointing at the chips", () => {
+  it("leads with the top five, pointing at the pills", () => {
     const first = NUDGE_IDEAS.slice(0, 5).map((idea) => idea.thing);
     assert.deepEqual(first, [
       "undo any reply that changed files — just hit ↩ under it",
-      "show what this chat is costing (📊 Usage chip)",
-      "answer a quick side question without losing our place (💬 chip)",
-      "track a goal for this chat (🎯 Goal chip)",
-      "try another approach without losing this one (🔀 Fork chip)",
+      "show what this chat is costing (the Usage pill)",
+      "answer a quick side question without losing our place (the Side pill)",
+      "track a goal for this chat (the Goal pill)",
+      "try another approach without losing this one (the Fork pill)",
     ]);
     assert.ok(NUDGE_IDEAS.every((idea) => !idea.thing.includes("voice note")));
+    assert.ok(NUDGE_IDEAS.every((idea) => !idea.thing.includes("chip")));
+    assert.ok(FRONT_DOOR_SECTION.includes("The pills under the input box can be swapped by right-clicking."));
   });
 });
 

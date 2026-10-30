@@ -3,6 +3,7 @@
 // imports.
 
 import { win32 } from "node:path";
+import type { StepGroup } from "./items.js";
 
 export interface ApprovalChoiceView {
   choiceId: string;
@@ -487,6 +488,89 @@ export function lookedAtRow(labels: string[]): string {
 /** "✓ Backed up todo.txt" */
 export function backedUpRow(files: string[]): string {
   return `✓ Backed up ${files.join(", ")}`;
+}
+
+export function autoAllowedRow(description: string): string {
+  return `✓ auto-allowed: ${description}`;
+}
+
+/** Installers and downloaders: Auto always asks for these. */
+const AUTO_ASK_COMMANDS = new Set(["irm", "iwr", "curl", "invoke-webrequest", "pip", "pip3", "winget", "choco"]);
+
+/** `npm` subcommands that install; the rest (test, run, build…) stay automatic. */
+const NPM_INSTALL_SUBCOMMANDS = new Set(["install", "i", "add", "ci"]);
+
+/**
+ * Auto mode: allow this stage without asking? Builds, tests, node/npm/npx
+ * scripts, git except push, and file edits/creates/deletes/moves — but only
+ * when every path stays inside the workspace. Still asks for installs and
+ * downloads, git push, outside paths, dynamic tokens, and anything it can't
+ * parse. Pure: the host decides, the webview only shows the row.
+ */
+export function autoAllowStage(argv: string[], workspaceRoot: string, fullCommand?: string): boolean {
+  if (argv.length === 0 || workspaceRoot === "") {
+    return false;
+  }
+  for (const token of argv.slice(1)) {
+    if (DYNAMIC_TOKEN.test(token)) {
+      return false;
+    }
+  }
+  const name = commandName(argv[0] ?? "");
+  if (name === "" || AUTO_ASK_COMMANDS.has(name)) {
+    return false;
+  }
+  if (name === "npm" && NPM_INSTALL_SUBCOMMANDS.has((argv[1] ?? "").toLowerCase())) {
+    return false;
+  }
+  if (name === "git" && (argv[1] ?? "").toLowerCase() === "push") {
+    return false;
+  }
+  const runnable =
+    name === "node" ||
+    name === "npm" ||
+    name === "npx" ||
+    name === "git" ||
+    Object.prototype.hasOwnProperty.call(STAGE_VERBS, name);
+  if (!runnable) {
+    return false;
+  }
+  if (fullCommand !== undefined && commandHasWrite(fullCommand)) {
+    const target = redirectTarget(argv);
+    if (!target || !insideDir(workspaceRoot, workspaceRoot, target)) {
+      return false;
+    }
+  }
+  return pathArgs(argv, () => false).every((token) => insideDir(workspaceRoot, workspaceRoot, token));
+}
+
+/** Auto mode: a file change goes through when its path stays inside the workspace. */
+export function autoAllowFile(target: string, workspaceRoot: string): boolean {
+  if (workspaceRoot === "" || DYNAMIC_TOKEN.test(target)) {
+    return false;
+  }
+  return insideDir(workspaceRoot, workspaceRoot, target);
+}
+
+/** "change todo.txt" / "read todo.txt": plain words for an allowed file change. */
+export function describeFileAccess(access: string, target: string): string {
+  const base = win32.basename(target) || target;
+  return access === "read" ? `read ${base}` : `change ${base}`;
+}
+
+/** Which step-group bucket an approved stage's row folds into. */
+export function stageGroup(argv: string[]): StepGroup {
+  const name = commandName(argv[0] ?? "");
+  if (name === "node" || name === "npm" || name === "npx" || name === "git") {
+    return "command";
+  }
+  if (Object.prototype.hasOwnProperty.call(STAGE_VERBS, name)) {
+    return "edit";
+  }
+  if (AUTO_ASK_COMMANDS.has(name)) {
+    return "command";
+  }
+  return "other";
 }
 
 function truncate(text: string, maxLength: number): string {

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  approvalsMenu,
   cleanShortcutSlots,
   DEFAULT_SHORTCUT_SLOTS,
   effortMenu,
@@ -68,5 +69,16 @@ describe("effortMenu", () => {
       { id: "deep", label: "Deep", ticked: false },
     ]);
     assert.ok(effortMenu("deep").find((row) => row.id === "deep")?.ticked);
+  });
+});
+
+describe("approvalsMenu", () => {
+  it("offers Ask, Auto and All with the current one ticked", () => {
+    assert.deepEqual(approvalsMenu("auto"), [
+      { id: "ask", label: "Ask", ticked: false },
+      { id: "auto", label: "Auto", ticked: true },
+      { id: "all", label: "All", ticked: false },
+    ]);
+    assert.ok(approvalsMenu("all").find((row) => row.id === "all")?.ticked);
   });
 });

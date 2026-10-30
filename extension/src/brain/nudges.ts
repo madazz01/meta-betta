@@ -16,19 +16,19 @@ export const NUDGE_IDEAS: NudgeIdea[] = [
     when: "the first time a reply changes files, or when they say something broke",
   },
   {
-    thing: "show what this chat is costing (📊 Usage chip)",
+    thing: "show what this chat is costing (the Usage pill)",
     when: "they wonder about cost or tokens",
   },
   {
-    thing: "answer a quick side question without losing our place (💬 chip)",
+    thing: "answer a quick side question without losing our place (the Side pill)",
     when: "they ask something off-topic in the middle of a job",
   },
   {
-    thing: "track a goal for this chat (🎯 Goal chip)",
+    thing: "track a goal for this chat (the Goal pill)",
     when: "a job has a clear finish line",
   },
   {
-    thing: "try another approach without losing this one (🔀 Fork chip)",
+    thing: "try another approach without losing this one (the Fork pill)",
     when: "an approach isn't working and they want to try differently",
   },
   {

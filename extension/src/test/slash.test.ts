@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  cleanApprovalChoice,
   cleanEffortLevel,
   cleanGoalInfo,
   commandErrorText,
@@ -280,6 +281,10 @@ describe("slash registry", () => {
     assert.equal(cleanEffortLevel("deep"), "deep");
     assert.equal(cleanEffortLevel("turbo"), "normal");
     assert.equal(cleanEffortLevel(undefined), "normal");
+    assert.equal(cleanApprovalChoice("ask"), "ask");
+    assert.equal(cleanApprovalChoice("auto"), "auto");
+    assert.equal(cleanApprovalChoice("all"), "auto");
+    assert.equal(cleanApprovalChoice(undefined), "auto");
   });
 });
 

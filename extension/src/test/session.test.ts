@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildForkTranscript,
   buildTranscript,
   cleanTranscript,
   cleanUndos,
@@ -65,7 +66,7 @@ describe("cleanTranscript", () => {
     assert.deepEqual(cleanTranscript(undefined), []);
     assert.deepEqual(cleanTranscript({}), []);
     assert.deepEqual(
-      cleanTranscript([{ role: "user", text: "hi" }, null, { role: "tool", text: "x" }, { role: "user" }]),
+      cleanTranscript([{ role: "user", text: "hi" }, null, { role: "status", text: "x" }, { role: "user" }]),
       [{ role: "user", text: "hi" }],
     );
   });
@@ -229,6 +230,60 @@ describe("cleanUndos", () => {
   it("keeps a session tag, drops a junk one", () => {
     assert.deepEqual(cleanUndos([{ ...valid, session: "s1" }]), [{ ...valid, session: "s1" }]);
     assert.deepEqual(cleanUndos([{ ...valid, session: 42 }]), [valid]);
+  });
+
+  it("keeps the committed flag, drops junk", () => {
+    assert.deepEqual(cleanUndos([{ ...valid, committed: true }]), [{ ...valid, committed: true }]);
+    assert.deepEqual(cleanUndos([{ ...valid, committed: "yes" }]), [valid]);
+  });
+});
+
+describe("buildForkTranscript", () => {
+  it("keeps both sides plus step rows, in order", () => {
+    assert.deepEqual(
+      buildForkTranscript([
+        { type: "user", text: "do it", at: 7 },
+        { type: "thinking", id: "t1", text: "Thought for 2s" },
+        { type: "tool", id: "r1", text: "📄 Wrote a.txt ✓", group: "edit" },
+        { type: "tool", id: "r2", text: "▶ npm test (didn't work)", group: "command", failed: true },
+        { type: "assistant", text: "Done.", at: 9 },
+        { type: "notice", text: "Peeked" },
+        { type: "status", text: "Ready" },
+      ]),
+      [
+        { role: "user", text: "do it", at: 7 },
+        { role: "thinking", text: "Thought for 2s", id: "t1" },
+        { role: "tool", text: "📄 Wrote a.txt ✓", id: "r1", group: "edit" },
+        { role: "tool", text: "▶ npm test (didn't work)", id: "r2", group: "command", failed: true },
+        { role: "assistant", text: "Done.", at: 9 },
+      ],
+    );
+  });
+
+  it("caps long chats at the fork limit", () => {
+    const events = Array.from({ length: 120 }, (_, index) => ({ type: "user", text: `m${index}` }));
+    const transcript = buildForkTranscript(events);
+    assert.equal(transcript.length, 100);
+    assert.equal(transcript[0]?.text, "m20");
+  });
+});
+
+describe("cleanTranscript steps", () => {
+  it("round-trips tool and thinking entries", () => {
+    assert.deepEqual(
+      cleanTranscript([
+        { role: "tool", text: "📄 Wrote a.txt ✓", id: "r1", group: "edit" },
+        { role: "thinking", text: "Thought for 2s", id: "t1" },
+        { role: "tool", text: "bad", group: "command", failed: true },
+      ]),
+      [
+        { role: "tool", text: "📄 Wrote a.txt ✓", id: "r1", group: "edit" },
+        { role: "thinking", text: "Thought for 2s", id: "t1" },
+        { role: "tool", text: "bad", group: "command", failed: true },
+      ],
+    );
+    assert.deepEqual(cleanTranscript([{ role: "tool", text: 42 }]), []);
+    assert.deepEqual(cleanTranscript([{ role: "thinking" }]), []);
   });
 });
 

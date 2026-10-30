@@ -5,6 +5,7 @@ import {
   isSandboxBugFailure,
   reasoningText,
   SANDBOX_BUG_TEXT,
+  toolGroup,
   toolRowText,
 } from "../lib/items.js";
 
@@ -17,7 +18,7 @@ describe("toolRowText", () => {
         displayLabel: { active: "Editing app.js", done: "Edited app.js", neutral: "Edit app.js" },
         status: "inProgress",
       }),
-      { text: "📄 Editing app.js", done: false, failed: false },
+      { text: "📄 Editing app.js", done: false, failed: false, group: "edit" },
     );
   });
 
@@ -153,6 +154,34 @@ describe("toolRowText", () => {
       "Working… — helper running",
     );
     assert.equal(toolRowText({ kind: "weird", status: "inProgress" }).text, "Working…");
+  });
+
+  it("names a target on every verb row, even with no args", () => {
+    assert.equal(
+      toolRowText({ kind: "toolCall", tool: "write_file", status: "completed" }).text,
+      "📄 Wrote a file ✓",
+    );
+    assert.equal(
+      toolRowText({ kind: "toolCall", tool: "bash", status: "inProgress" }).text,
+      "▶ Running a command",
+    );
+    assert.equal(
+      toolRowText({ kind: "toolCall", tool: "fetch_url", status: "completed" }).text,
+      "🔍 Fetched a file ✓",
+    );
+  });
+});
+
+describe("toolGroup", () => {
+  it("buckets rows for the collapsed summary line", () => {
+    assert.equal(toolGroup("userShell", undefined), "command");
+    assert.equal(toolGroup("toolCall", "write_file"), "edit");
+    assert.equal(toolGroup("toolCall", "bash"), "command");
+    assert.equal(toolGroup("toolCall", "read"), "read");
+    assert.equal(toolGroup("toolCall", "grep"), "search");
+    assert.equal(toolGroup("toolCall", "fetch_url"), "read");
+    assert.equal(toolGroup("toolCall", "mystery_box"), "other");
+    assert.equal(toolGroup("subagent", undefined), "other");
   });
 });
 

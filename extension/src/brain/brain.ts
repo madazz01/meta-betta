@@ -110,6 +110,7 @@ export const FRONT_DOOR_SECTION = `<!-- meta-betta:start -->
 9. Before changing an existing file, copy it to .backups/<date>/<same path> first, and say where the copy is in one line.
 10. Nudge new tricks, at most one per session: only right after a job that went well, only if it fits what they just did, never anything listed in brain/good-for.md or declined in brain/me.md ("not interested: …"). Format, exactly: "💡 Did you know I can also <thing>? Want me to show you on <their actual file>?" If they say no, reply briefly and never suggest that thing again. (The extension files "not interested: <thing>" in brain/me.md when they press Not now.) Things you may offer, each with when it fits:
 ${nudgeHintsText()}
+The pills under the input box can be swapped by right-clicking.
 11. The first time you use a technical word with this person (e.g. .gitignore, commit, dependency), explain it in a few plain words in brackets, e.g. "added .backups/ to your .gitignore (the list of files git won't upload)". After that, just use the word. If brain/me.md says they already know it, skip the explanation.
 12. If the user is just noticing something (e.g. "I have to click yes a lot", "that icon looks like Java") and hasn't asked for anything, don't change anything. Reply briefly and ask: "Want me to look at that?" Only act on a clear ask ("can you", "let's", "fix", "go", "do it"). If brain/me.md says how this person signals, follow that.
 <!-- meta-betta:end -->`;
@@ -400,6 +401,27 @@ function isGreetingOnly(clean: string): boolean {
 export function isGreetingMessage(text: string): boolean {
   const clean = text.replace(/\s+/g, " ").trim();
   return clean !== "" && isGreetingOnly(clean);
+}
+
+const JOB_LEADERS =
+  /^(?:please\s+)?(?:build|create|make|add|fix|change|update|delete|remove|run|write|show|open|help|explain|find|search|move|rename|copy|test|debug|implement|refactor|check|look|tell|give|do|can you|could you|please|how|what|why|when|where|which)\b/i;
+
+/**
+ * True when a first message in a fresh folder is a job for Muse ("delete
+ * todo.txt", "how do I…") rather than a greeting or a name answer. Jobs skip
+ * the name questions for now; the name gets asked at the next greeting.
+ * Refusals ("no", "skip") are answers, never jobs.
+ */
+export function isJobFirstMessage(text: string): boolean {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean === "" || isGreetingMessage(clean) || WELCOME_REFUSALS.test(clean)) {
+    return false;
+  }
+  if (JOB_LEADERS.test(clean)) {
+    return true;
+  }
+  // A name answer is short with a name in it; anything longer is a job.
+  return welcomeName(clean) === undefined || clean.length > 40 || clean.split(" ").length > 3;
 }
 
 const UNFINISHED_LIMIT = 200;

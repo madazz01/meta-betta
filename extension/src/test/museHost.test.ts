@@ -173,7 +173,7 @@ describe("MuseHost", () => {
     assert.equal(first.length, 2);
     assert.ok(first[0]?.includes("Muse can't run commands from Meta Betta yet"));
     assert.ok(!first[0]?.includes("windows_elevated"));
-    assert.equal(first[1], "▶ Running (didn't work)");
+    assert.equal(first[1], "▶ Running a command (didn't work)");
 
     await fake.host.newSession(process.cwd());
     await fake.host.send("run them again", process.cwd());
@@ -204,7 +204,15 @@ function fakeCommands(options: {
   commands?: Record<string, Record<string, unknown>>;
   sessions?: Record<string, HostSession>;
   failCommands?: string[];
-  hostOptions?: { sandboxWorkaround?: boolean; platform?: string; turnOwner?: string };
+  hostOptions?: {
+    sandboxWorkaround?: boolean;
+    platform?: string;
+    turnOwner?: string;
+    approvalMode?: "ask" | "auto";
+    approvalAllLeftOn?: string;
+    onApprovalAllReverted?: () => void;
+    sessionStore?: { loadId: () => string | undefined; saveId: (id: string) => void; clear: () => void };
+  };
 }): ScriptedFake {
   const events: MuseHostEvent[] = [];
   const requests: ScriptedFake["requests"] = [];
@@ -758,6 +766,155 @@ describe("approval picker", () => {
   });
 });
 
+describe("approval auto mode", () => {
+  it("auto-answers passing stages with auto-allowed rows", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" }, { approvalMode: "auto" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(
+      await fake.decide(
+        shellRequest(0, { approvalId: "auto-1", command: "npm test", stages: [["npm", "test"]] }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 0);
+    const rows = fake.events.filter(
+      (event): event is Extract<MuseHostEvent, { type: "tool" }> => event.type === "tool",
+    );
+    assert.deepEqual(
+      rows.map((row) => row.text),
+      ["✓ auto-allowed: run npm test"],
+    );
+    assert.equal(rows[0]?.group, "command");
+    await fake.host.dispose();
+  });
+
+  it("asks when any stage fails the Auto rules", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" }, { approvalMode: "auto" });
+    await fake.host.prepare(process.cwd());
+    await fake.decide(
+      shellRequest(0, { approvalId: "auto-2", command: "git push", stages: [["git", "push"]] }),
+    );
+    assert.equal(fake.pickers.length, 1);
+    assert.ok(!toolRowTexts(fake.events).some((text) => text.startsWith("✓ auto-allowed")));
+    await fake.host.dispose();
+  });
+
+  it("checks every stage, with read-only riding quietly", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" }, { approvalMode: "auto" });
+    await fake.host.prepare(process.cwd());
+    const stages = [
+      ["Get-ChildItem"],
+      ["npm", "test"],
+    ];
+    assert.deepEqual(
+      await fake.decide(shellRequest(0, { approvalId: "auto-3", stages })),
+      { choiceId: "allow_once" },
+    );
+    assert.deepEqual(
+      await fake.decide(shellRequest(1, { approvalId: "auto-3", stages })),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 0);
+    await fake.host.send("hi", process.cwd());
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: Get-ChildItem"));
+    assert.ok(toolRowTexts(fake.events).includes("✓ auto-allowed: run npm test"));
+    await fake.host.dispose();
+  });
+
+  it("auto-allows file changes inside the workspace", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" }, { approvalMode: "auto" });
+    await fake.host.prepare(process.cwd());
+    const request = {
+      approvalId: "auto-4",
+      availableChoices: SHELL_CHOICES,
+      currentRequirementId: { approvalId: "auto-4", sourceIndex: 0 },
+      subject: { kind: "fileAccess", access: "write", path: "todo.txt" },
+      toolName: "edit",
+      rawArgs: "{}",
+    } as unknown as ApprovalRequestParams;
+    assert.deepEqual(await fake.decide(request), { choiceId: "allow_once" });
+    assert.equal(fake.pickers.length, 0);
+    assert.ok(toolRowTexts(fake.events).includes("✓ auto-allowed: change todo.txt"));
+    await fake.host.dispose();
+  });
+
+  it("stays quiet in Ask mode for the same stages", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    await fake.decide(
+      shellRequest(0, { approvalId: "ask-1", command: "npm test", stages: [["npm", "test"]] }),
+    );
+    assert.equal(fake.pickers.length, 1);
+    assert.ok(!toolRowTexts(fake.events).some((text) => text.startsWith("✓ auto-allowed")));
+    await fake.host.dispose();
+  });
+});
+
+describe("approval allow-all", () => {
+  it("selects allowAll and checks it was confirmed", async () => {
+    const fake = fakeCommands({
+      commands: { "session/setApprovalMode": { effectiveMode: { mode: "allowAll" } } },
+    });
+    await fake.host.setApprovalAll(process.cwd());
+    assert.deepEqual(fake.commands.at(-1), {
+      method: "session/setApprovalMode",
+      params: { sessionId: "session-1", mode: "allowAll" },
+    });
+    await fake.host.dispose();
+  });
+
+  it("refuses when the server doesn't confirm", async () => {
+    const fake = fakeCommands({});
+    await assert.rejects(() => fake.host.setApprovalAll(process.cwd()), /didn't take it/);
+    await fake.host.dispose();
+  });
+
+  it("reverts to promptUnmatched and checks that too", async () => {
+    const fake = fakeCommands({
+      commands: { "session/setApprovalMode": { effectiveMode: { mode: "promptUnmatched" } } },
+    });
+    await fake.host.clearApprovalAll(process.cwd());
+    assert.deepEqual(fake.commands.at(-1), {
+      method: "session/setApprovalMode",
+      params: { sessionId: "session-1", mode: "promptUnmatched" },
+    });
+    await fake.host.dispose();
+  });
+
+  it("reverts a leftover allowAll when the session resumes", async () => {
+    let reverted = 0;
+    const fake = fakeCommands({
+      commands: { "session/setApprovalMode": { effectiveMode: { mode: "promptUnmatched" } } },
+      sessions: {
+        "session-9": {
+          sessionId: "session-9",
+          sendUserTurn: async () => cannedTurn([]),
+          onApproval: () => undefined,
+          onApprovalError: () => undefined,
+          fold: { items: { list: () => [] } },
+        },
+      },
+      hostOptions: {
+        approvalAllLeftOn: "session-9",
+        onApprovalAllReverted: () => {
+          reverted += 1;
+        },
+        sessionStore: { loadId: () => "session-9", saveId: () => undefined, clear: () => undefined },
+      },
+    });
+    await fake.host.prepare(process.cwd());
+    assert.ok(
+      fake.commands.some(
+        (command) =>
+          command.method === "session/setApprovalMode" &&
+          (command.params as { mode?: string }).mode === "promptUnmatched",
+      ),
+    );
+    assert.equal(reverted, 1);
+    await fake.host.dispose();
+  });
+});
+
 interface ApprovalFake {
   host: MuseHost;
   events: MuseHostEvent[];
@@ -766,7 +923,10 @@ interface ApprovalFake {
 }
 
 /** Captures the registered approval handler plus the picker it builds. */
-function fakeApprovalHost(answer: ApprovalAnswer | undefined): ApprovalFake {
+function fakeApprovalHost(
+  answer: ApprovalAnswer | undefined,
+  options?: { approvalMode?: "ask" | "auto" },
+): ApprovalFake {
   const events: MuseHostEvent[] = [];
   const pickers: PickerEvent[] = [];
   let handler: ((request: ApprovalRequestParams) => Promise<ApprovalAnswer>) | undefined;
@@ -794,6 +954,7 @@ function fakeApprovalHost(answer: ApprovalAnswer | undefined): ApprovalFake {
       museBin: "unused",
       version: "0.0.1",
       trustWorkspace: false,
+      ...(options?.approvalMode ? { approvalMode: options.approvalMode } : {}),
       emit: (event) => {
         events.push(event);
       },

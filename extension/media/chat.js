@@ -19,6 +19,7 @@
   const goalEl = document.getElementById("goal");
   const slashMenuEl = document.getElementById("slash-menu");
   const effortButton = document.getElementById("effort");
+  const approvalsButton = document.getElementById("approvals");
   const pillsEl = document.getElementById("pills");
   const popupEl = document.getElementById("popup");
   const composerWrapEl = document.getElementById("composer-wrap");
@@ -54,7 +55,14 @@
   let shortcutSlots = [];
   let effortLevels = [];
   let effortCurrent = "normal";
+  let approvalsModes = [];
+  let approvalsCurrent = "auto";
   let popupFor = null;
+  // Step grouping: consecutive tool/thinking rows fold into one summary.
+  const grouper = window.MetaBettaSteps ? window.MetaBettaSteps.createGrouper() : null;
+  let stepsEl = null;
+  let stepsList = null;
+  let stepsSummary = null;
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -118,10 +126,55 @@
     turnEl = document.createElement("div");
     turnEl.className = "turn";
     messagesEl.appendChild(turnEl);
+    breakSteps();
   }
 
   function closeTurn() {
     turnEl = null;
+    breakSteps();
+  }
+
+  // Solo content (messages, notices, cards…) closes the step group; the
+  // next steps open a fresh one.
+  function breakSteps() {
+    if (grouper) {
+      grouper.close();
+    }
+    stepsEl = null;
+    stepsList = null;
+    stepsSummary = null;
+  }
+
+  // The parent for a step row: the open group, or null when it stands alone.
+  function foldStep(kind, id, failed, group) {
+    if (!grouper) {
+      return stepParent();
+    }
+    const verdict = grouper.push(kind, failed === true, id, group);
+    if (verdict.action !== "fold") {
+      if (verdict.summary && stepsSummary) {
+        // A failed row moved out; the rest of the group stays open.
+        stepsSummary.textContent = verdict.summary;
+      } else {
+        stepsEl = null;
+        stepsList = null;
+        stepsSummary = null;
+      }
+      return null;
+    }
+    if (!stepsEl || !stepsEl.isConnected || stepsEl.parentElement !== stepParent()) {
+      stepsEl = document.createElement("details");
+      stepsEl.className = "steps";
+      stepsSummary = document.createElement("summary");
+      stepsSummary.className = "steps-summary";
+      stepsList = document.createElement("div");
+      stepsList.className = "steps-list";
+      stepsEl.appendChild(stepsSummary);
+      stepsEl.appendChild(stepsList);
+      stepParent().appendChild(stepsEl);
+    }
+    stepsSummary.textContent = verdict.summary;
+    return stepsList;
   }
 
   function stepParent() {
@@ -217,6 +270,7 @@
   function upsertAssistant(id, text, time) {
     hideEmptyState();
     dropCatchingUp();
+    breakSteps();
     let reply = assistantEls.get(id);
     if (!reply) {
       reply = document.createElement("div");
@@ -538,6 +592,17 @@
     return found ? found.label : "Normal";
   }
 
+  function updateApprovals(mode) {
+    approvalsCurrent = mode;
+    approvalsButton.textContent = `Approvals: ${approvalsLabel(mode)} ▾`;
+    approvalsButton.classList.toggle("danger", mode === "all");
+  }
+
+  function approvalsLabel(mode) {
+    const found = approvalsModes.find((row) => row.id === mode);
+    return found ? found.label : "Auto";
+  }
+
   function shortcutDef(id) {
     return shortcutList.find((def) => def.id === id);
   }
@@ -681,6 +746,23 @@
     positionPopup(effortButton, "right");
   }
 
+  function openApprovalsMenu() {
+    if (approvalsModes.length === 0) {
+      return;
+    }
+    popupFor = { kind: "approvals" };
+    popupEl.replaceChildren();
+    approvalsModes.forEach((row) => {
+      popupEl.appendChild(
+        popupRow(row.label, "", row.id === approvalsCurrent, () => {
+          vscode.postMessage({ type: "approvalsSet", mode: row.id });
+        }),
+      );
+    });
+    popupEl.hidden = false;
+    positionPopup(approvalsButton, "right");
+  }
+
   function closeSlashMenu() {
     slashOpen = false;
     slashMenuEl.hidden = true;
@@ -745,7 +827,7 @@
       body.className = "thinking-text";
       details.appendChild(summary);
       details.appendChild(body);
-      stepParent().appendChild(details);
+      (foldStep("thinking", id, false) || stepParent()).appendChild(details);
       entry = { el: details, started: Date.now() };
       thinkingEls.set(id, entry);
     }
@@ -755,17 +837,35 @@
     scrollToBottom();
   }
 
-  function upsertTool(id, text, done) {
+  function upsertTool(id, text, done, group, failed) {
     hideEmptyState();
+    const parent = foldStep("tool", id, failed, group);
     let row = toolEls.get(id);
-    if (!row) {
+    if (!parent) {
+      // Standalone: a failed row, possibly moving out of its group.
+      if (row && stepsList && row.parentElement === stepsList) {
+        stepParent().appendChild(row);
+        if (stepsList.children.length === 0 && stepsEl) {
+          stepsEl.remove();
+          breakSteps();
+        }
+      } else if (!row) {
+        row = document.createElement("div");
+        row.className = "tool";
+        stepParent().appendChild(row);
+        toolEls.set(id, row);
+      }
+    } else if (!row) {
       row = document.createElement("div");
       row.className = "tool";
-      stepParent().appendChild(row);
+      parent.appendChild(row);
       toolEls.set(id, row);
+    } else if (row.parentElement !== parent) {
+      parent.appendChild(row);
     }
     row.textContent = text;
     row.classList.toggle("done", Boolean(done));
+    row.classList.toggle("tool-failed", failed === true);
     scrollToBottom();
   }
 
@@ -1118,6 +1218,7 @@
   function clearChat() {
     dropCatchingUp();
     closeTurn();
+    breakSteps();
     lastStampAt = 0;
     messagesEl.replaceChildren();
     assistantEls.clear();
@@ -1165,12 +1266,24 @@
     }
   });
 
+  approvalsButton.addEventListener("click", () => {
+    if (popupFor && popupFor.kind === "approvals") {
+      closePopup();
+    } else {
+      openApprovalsMenu();
+    }
+  });
+
   // A popup closes on Escape or a click anywhere outside it.
   document.addEventListener("click", (event) => {
     if (popupEl.hidden || popupEl.contains(event.target)) {
       return;
     }
-    if (event.target === effortButton || pillsEl.contains(event.target)) {
+    if (
+      event.target === effortButton ||
+      event.target === approvalsButton ||
+      pillsEl.contains(event.target)
+    ) {
       return;
     }
     closePopup();
@@ -1262,6 +1375,7 @@
         break;
       case "day":
         if (typeof message.label === "string") {
+          breakSteps();
           addDayDivider(message.label);
         }
         break;
@@ -1279,6 +1393,7 @@
           typeof message.title === "string" &&
           typeof message.body === "string"
         ) {
+          breakSteps();
           renderCard(message);
         }
         break;
@@ -1298,6 +1413,16 @@
         }
         if (typeof message.level === "string") {
           updateEffort(message.level);
+        }
+        break;
+      case "approvals":
+        if (Array.isArray(message.modes)) {
+          approvalsModes = message.modes.filter(
+            (row) => row && typeof row.id === "string" && typeof row.label === "string",
+          );
+        }
+        if (typeof message.mode === "string") {
+          updateApprovals(message.mode);
         }
         break;
       case "ding":
@@ -1340,7 +1465,7 @@
         break;
       case "tool":
         if (typeof message.id === "string" && typeof message.text === "string") {
-          upsertTool(message.id, message.text, message.done);
+          upsertTool(message.id, message.text, message.done, message.group, message.failed);
         }
         break;
       case "status":
@@ -1360,11 +1485,13 @@
         break;
       case "notice":
         if (typeof message.text === "string") {
+          breakSteps();
           addNotice(message);
         }
         break;
       case "busy":
         if (typeof message.text === "string") {
+          breakSteps();
           onBusy(message.text);
         }
         break;
@@ -1383,11 +1510,13 @@
         break;
       case "saved":
         if (typeof message.text === "string") {
+          breakSteps();
           addSaved(message);
         }
         break;
       case "undo":
         if (typeof message.id === "string" && typeof message.label === "string") {
+          breakSteps();
           addUndo(message);
         }
         break;
@@ -1406,6 +1535,7 @@
         break;
       case "memory":
         if (typeof message.text === "string" && typeof message.detail === "string") {
+          breakSteps();
           addMemory(message);
         }
         break;

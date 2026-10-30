@@ -4,12 +4,16 @@ import {
   allowedOnceRow,
   alwaysAllowedRow,
   approvalCard,
+  autoAllowedRow,
+  autoAllowFile,
+  autoAllowStage,
   backedUpRow,
   backupAction,
   choiceHint,
   commandHasWrite,
   commandName,
   currentStage,
+  describeFileAccess,
   describeStage,
   findStageChoice,
   isReadOnlyStage,
@@ -19,6 +23,7 @@ import {
   rejectedRow,
   rememberedDecision,
   safestChoiceId,
+  stageGroup,
   stageLabel,
 } from "../lib/approvals.js";
 
@@ -396,5 +401,78 @@ describe("safestChoiceId", () => {
     );
     assert.equal(safestChoiceId([{ choiceId: "a", decision: "approved", label: "Allow" }]), "a");
     assert.equal(safestChoiceId([]), undefined);
+  });
+});
+
+describe("autoAllowStage", () => {
+  const root = "C:\\ws";
+
+  it("allows builds, tests, scripts and git inside the workspace", () => {
+    assert.equal(autoAllowStage(["npm", "test"], root), true);
+    assert.equal(autoAllowStage(["npm", "run", "build"], root), true);
+    assert.equal(autoAllowStage(["npx", "jest", "--watch"], root), true);
+    assert.equal(autoAllowStage(["node", "script.js"], root), true);
+    assert.equal(autoAllowStage(["git", "status"], root), true);
+    assert.equal(autoAllowStage(["git", "commit", "-m", "done"], root), true);
+    assert.equal(autoAllowStage(["Remove-Item", "todo.txt"], root), true);
+    assert.equal(autoAllowStage(["Copy-Item", "a.txt", "b.txt"], root), true);
+    assert.equal(autoAllowStage(["mkdir", "notes"], root), true);
+  });
+
+  it("asks for installs, downloads, push and strangers", () => {
+    assert.equal(autoAllowStage(["npm", "install", "x"], root), false);
+    assert.equal(autoAllowStage(["npm", "i"], root), false);
+    assert.equal(autoAllowStage(["npm", "add", "x"], root), false);
+    assert.equal(autoAllowStage(["pip", "install", "x"], root), false);
+    assert.equal(autoAllowStage(["winget", "install", "x"], root), false);
+    assert.equal(autoAllowStage(["curl", "https://example.com"], root), false);
+    assert.equal(autoAllowStage(["irm", "https://example.com/x.ps1"], root), false);
+    assert.equal(autoAllowStage(["git", "push"], root), false);
+    assert.equal(autoAllowStage(["cargo", "build"], root), false);
+    assert.equal(autoAllowStage(["myscript"], root), false);
+    assert.equal(autoAllowStage([], root), false);
+  });
+
+  it("asks when paths leave the workspace or tokens move", () => {
+    assert.equal(autoAllowStage(["Remove-Item", "C:\\Windows\\x.txt"], root), false);
+    assert.equal(autoAllowStage(["Remove-Item", "..\\..\\x.txt"], root), false);
+    assert.equal(autoAllowStage(["node", "$file"], root), false);
+    assert.equal(autoAllowStage(["git", "add", "*.js"], root), false);
+    assert.equal(autoAllowStage(["node", "a.js"], ""), false);
+  });
+
+  it("asks for redirects it cannot verify inside", () => {
+    assert.equal(autoAllowStage(["npm", "test", ">", "out.log"], root, "npm test > out.log"), true);
+    assert.equal(autoAllowStage(["npm", "test", ">", "C:\\x\\out.log"], root, "npm test > C:\\x\\out.log"), false);
+    assert.equal(autoAllowStage(["npm", "test"], root, "npm test > out.log"), false);
+  });
+});
+
+describe("autoAllowFile", () => {
+  it("allows inside paths, asks outside", () => {
+    assert.equal(autoAllowFile("src/app.js", "C:\\ws"), true);
+    assert.equal(autoAllowFile("C:\\ws\\src\\app.js", "C:\\ws"), true);
+    assert.equal(autoAllowFile("C:\\Windows\\x.txt", "C:\\ws"), false);
+    assert.equal(autoAllowFile("..\\x.txt", "C:\\ws"), false);
+    assert.equal(autoAllowFile("$env:x", "C:\\ws"), false);
+    assert.equal(autoAllowFile("a.txt", ""), false);
+  });
+});
+
+describe("autoAllowedRow", () => {
+  it("words the answered row", () => {
+    assert.equal(autoAllowedRow("run npm test"), "✓ auto-allowed: run npm test");
+    assert.equal(describeFileAccess("read", "src/app.js"), "read app.js");
+    assert.equal(describeFileAccess("write", "src/app.js"), "change app.js");
+  });
+});
+
+describe("stageGroup", () => {
+  it("buckets approved stages for the step group", () => {
+    assert.equal(stageGroup(["npm", "test"]), "command");
+    assert.equal(stageGroup(["git", "status"]), "command");
+    assert.equal(stageGroup(["Remove-Item", "x.txt"]), "edit");
+    assert.equal(stageGroup(["curl", "https://example.com"]), "command");
+    assert.equal(stageGroup(["mystery"]), "other");
   });
 });

@@ -16,6 +16,34 @@ export interface ToolRow {
   text: string;
   done: boolean;
   failed: boolean;
+  group: StepGroup;
+}
+
+/** Step-group buckets for the collapsed "Read 8 files · ran 3 commands" line. */
+export type StepGroup = "read" | "command" | "edit" | "search" | "other";
+
+/** Which bucket a tool row folds into, from its kind and tool name. */
+export function toolGroup(kind: string, tool: string | undefined): StepGroup {
+  if (kind === "userShell") {
+    return "command";
+  }
+  if (kind !== "toolCall") {
+    return "other";
+  }
+  const name = (tool ?? "").toLowerCase();
+  if (/(write|edit|create|apply|patch|save|delete|remove)/.test(name)) {
+    return "edit";
+  }
+  if (/(exec|bash|shell|command|run|test|build|npm|cargo)/.test(name)) {
+    return "command";
+  }
+  if (/(search|grep|find)/.test(name)) {
+    return "search";
+  }
+  if (/(read|cat|list|glob|fetch|download)/.test(name)) {
+    return "read";
+  }
+  return "other";
 }
 
 /**
@@ -39,6 +67,7 @@ export function isSandboxBugFailure(failureReason: string | undefined): boolean 
 export function toolRowText(item: ToolItemView, sandboxNoted = false): ToolRow {
   const failed = item.status === "failed" || item.status === "rejected" || item.status === "timedOut";
   const done = item.status !== "inProgress";
+  const group = toolGroup(item.kind, item.tool);
   let text: string;
   if (item.kind === "userShell") {
     text = `▶ ${truncate(item.commandText?.trim() || "shell command", 80)}`;
@@ -58,7 +87,7 @@ export function toolRowText(item: ToolItemView, sandboxNoted = false): ToolRow {
   } else if (done) {
     text += " ✓";
   }
-  return { text, done, failed };
+  return { text, done, failed, group };
 }
 
 /** Collapsed thinking text: streamed summary parts, or raw text where exposed. */
@@ -133,14 +162,15 @@ function toolLabel(item: ToolItemView, past: boolean): string {
   return label.neutral;
 }
 
-const TOOL_VERBS: { pattern: RegExp; active: string; past: string }[] = [
-  { pattern: /(write|create|save)/, active: "Writing", past: "Wrote" },
-  { pattern: /(edit|apply|patch)/, active: "Editing", past: "Edited" },
-  { pattern: /(delete|remove)/, active: "Deleting", past: "Deleted" },
-  { pattern: /(exec|bash|shell|command|run|test|build)/, active: "Running", past: "Ran" },
-  { pattern: /(read|cat)/, active: "Reading", past: "Read" },
-  { pattern: /(list|glob)/, active: "Listing", past: "Listed" },
-  { pattern: /(search|grep|find)/, active: "Searching", past: "Searched" },
+const TOOL_VERBS: { pattern: RegExp; active: string; past: string; thing: string }[] = [
+  { pattern: /(write|create|save)/, active: "Writing", past: "Wrote", thing: "a file" },
+  { pattern: /(edit|apply|patch)/, active: "Editing", past: "Edited", thing: "a file" },
+  { pattern: /(delete|remove)/, active: "Deleting", past: "Deleted", thing: "a file" },
+  { pattern: /(exec|bash|shell|command|run|test|build)/, active: "Running", past: "Ran", thing: "a command" },
+  { pattern: /(fetch|download)/, active: "Fetching", past: "Fetched", thing: "a file" },
+  { pattern: /(read|cat)/, active: "Reading", past: "Read", thing: "a file" },
+  { pattern: /(list|glob)/, active: "Listing", past: "Listed", thing: "a folder" },
+  { pattern: /(search|grep|find)/, active: "Searching", past: "Searched", thing: "files" },
 ];
 
 /**
@@ -153,7 +183,11 @@ function friendlyToolText(tool: string | undefined, args: string | undefined, pa
   for (const verb of TOOL_VERBS) {
     if (verb.pattern.test(name)) {
       const word = past ? verb.past : verb.active;
-      return target ? `${word} ${target}` : word;
+      if (target) {
+        return `${word} ${target}`;
+      }
+      // Every row names its target: no bare "Wrote ✓", but "Wrote a file ✓".
+      return `${word} ${verb.thing}`;
     }
   }
   const pretty = prettifyTool(tool);
@@ -209,7 +243,7 @@ function toolIcon(tool: string | undefined): string {
   if (/(exec|bash|shell|command|run|test|build|npm|cargo)/.test(name)) {
     return "▶";
   }
-  if (/(read|list|glob|grep|search|find)/.test(name)) {
+  if (/(read|list|glob|grep|search|find|fetch|download)/.test(name)) {
     return "🔍";
   }
   return "🔧";

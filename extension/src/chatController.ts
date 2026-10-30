@@ -4,6 +4,8 @@ import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
+  APPROVAL_CHOICES,
+  cleanApprovalChoice,
   cleanEffortLevel,
   cleanGoalInfo,
   commandErrorText,
@@ -14,6 +16,7 @@ import {
   SLASH_COMMANDS,
   unknownCommandText,
   type AllowanceSlice,
+  type ApprovalChoice,
   type CardHandlers,
   type CardSpec,
   type EffortLevel,
@@ -26,6 +29,7 @@ import {
   type TaskRow,
 } from "./commands/slash.js";
 import {
+  approvalsMenu,
   cleanShortcutSlots,
   DEFAULT_SHORTCUT_SLOTS,
   effortMenu,
@@ -34,8 +38,10 @@ import {
   swapShortcutSlot,
 } from "./commands/shortcuts.js";
 import { parseCardButton, parseCardInput, parseNudgeAnswer, parseSendMessage } from "./lib/chat.js";
+import type { StepGroup } from "./lib/items.js";
 import { parseFileLink } from "./lib/links.js";
 import {
+  buildForkTranscript,
   buildTranscript,
   cleanTranscript,
   cleanUndos,
@@ -75,6 +81,7 @@ import {
   formatSaveTime,
   formatSessionLabel,
   isGreetingMessage,
+  isJobFirstMessage,
   isLabelTaken,
   isStarterMe,
   LIVE_LABEL_TTL_MS,
@@ -100,7 +107,15 @@ import {
   WELCOME_MEMORY_TEXT,
   WELCOME_PROMPT,
 } from "./brain/prompts.js";
-import { findGitBin, formatUndoTime, NoGitError, ShadowSnapshots } from "./safety/snapshots.js";
+import {
+  findGitBin,
+  formatUndoTime,
+  gitHeadMoved,
+  NoGitError,
+  readGitHead,
+  ShadowSnapshots,
+  undoCommitWarning,
+} from "./safety/snapshots.js";
 import { singleFlight } from "./lib/singleFlight.js";
 import { findMuseBin } from "./muse/resolveBin.js";
 import {
@@ -175,7 +190,7 @@ type TranscriptEvent =
   | ChatUserMessage
   | ChatAssistantMessage
   | { type: "thinking"; id: string; text: string }
-  | { type: "tool"; id: string; text: string; done: boolean }
+  | { type: "tool"; id: string; text: string; done: boolean; group?: StepGroup; failed?: boolean }
   | PickerEvent
   | { type: "approvalDone"; id: string }
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
@@ -206,8 +221,19 @@ const API_KEY_SECRET = "metaBetta.apiKey";
 const FIRST_RUN_READY_KEY = "metaBetta.firstRunReady";
 /** The setup test turn must answer within this. */
 const TEST_TURN_TIMEOUT_MS = 120_000;
+
+/** The before-turn state: a shadow snapshot plus the repo HEAD at the time. */
+interface BeforeState {
+  sha: string;
+  at: number;
+  excluded: string[];
+  headBefore: string | undefined;
+}
 const GOAL_KEY = "metaBetta.goal";
 const EFFORT_KEY = "metaBetta.effort";
+const APPROVALS_KEY = "metaBetta.approvals";
+/** A session left in All when the window closed; the host reverts it on resume. */
+const APPROVAL_ALL_KEY = "metaBetta.approvalAll";
 const DAILY_USAGE_KEY = "metaBetta.dailyUsage";
 const SHELL_NOTICE_KEY = "metaBetta.shellNoticeShown";
 /** The user's shortcut pill choices (globalState: every project). */
@@ -261,7 +287,7 @@ export class ChatController {
   private pendingSave: "full" | undefined;
   private turnsSinceSave = 0;
   private lastSaveAt = Date.now();
-  private pendingBefore: { sha: string; at: number; excluded: string[] } | undefined;
+  private pendingBefore: BeforeState | undefined;
   private undos = new Map<string, StoredUndo>();
   private undoCounter = 0;
   private anchorHigh = 0;
@@ -285,6 +311,11 @@ export class ChatController {
   private lastUsage: SessionUsageTotals | undefined;
   private lastGoal: GoalInfo | null = null;
   private lastEffort: EffortLevel = "normal";
+  private lastApprovals: ApprovalChoice = "auto";
+  /** Fork attach: swallow server history, the seed transcript replays instead. */
+  private quietAttach = false;
+  /** A greeting in a fresh folder: ask the deferred name question after this turn. */
+  private welcomeAfterTurn: vscode.WorkspaceFolder | undefined;
   private switching = false;
   private disposed = false;
   private readonly createHostShared = singleFlight((folder: vscode.WorkspaceFolder) =>
@@ -309,6 +340,7 @@ export class ChatController {
   ) {
     this.lastGoal = cleanGoalInfo(this.storage.get<unknown>(this.tabKey(GOAL_KEY)));
     this.lastEffort = cleanEffortLevel(this.storage.get<unknown>(this.tabKey(EFFORT_KEY)));
+    this.lastApprovals = cleanApprovalChoice(this.storage.get<unknown>(this.tabKey(APPROVALS_KEY)));
     if (this.tabHost.seed?.catchUp) {
       this.forceCatchUp = true;
     }
@@ -342,6 +374,11 @@ export class ChatController {
     });
     sink.post({ type: "goal", goal: this.lastGoal });
     sink.post({ type: "effort", level: this.lastEffort, levels: effortMenu(this.lastEffort) });
+    sink.post({
+      type: "approvals",
+      mode: this.lastApprovals,
+      modes: approvalsMenu(this.lastApprovals),
+    });
     sink.post({ type: "shortcuts", shortcuts: shortcutDefs(), slots: this.shortcutSlots() });
     const ding = vscode.workspace.getConfiguration("metaBetta").get<boolean>("dingWhenDone", true);
     sink.post({ type: "ding", enabled: ding });
@@ -481,10 +518,36 @@ export class ChatController {
       return;
     }
     await this.sendNow(folder, text);
+    if (this.welcomeAfterTurn) {
+      // The greeting's turn is done and the lock is free: ask the deferred name.
+      const pending = this.welcomeAfterTurn;
+      this.welcomeAfterTurn = undefined;
+      try {
+        await this.maybeWelcome(pending);
+      } catch {
+        // A reload tries the welcome again.
+      }
+    }
   }
 
   /** File a welcome answer into the brain; runs once per message, queued or not. */
   private async fileWelcomeAnswer(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
+    if (
+      (this.welcomeStep === undefined || this.welcomeStep === "hello") &&
+      (await this.isFreshWelcome(folder))
+    ) {
+      if (isJobFirstMessage(text)) {
+        // A job first: skip the name questions for now, do the job, and put
+        // the memory note before the reply. The name waits for a greeting.
+        this.welcomeStep = undefined;
+        this.broadcast({ type: "welcomeSkip", show: false });
+        this.postMemoryNoteOnce();
+        return;
+      }
+      if (this.welcomeStep === undefined && isGreetingMessage(text) && lockHolder() === undefined) {
+        this.welcomeAfterTurn = folder;
+      }
+    }
     if (this.welcomeStep === "hello" && !this.welcomeHeard) {
       // The hello never arrived (failed or stopped): cancel rather than
       // filing guesses. A reload tries the welcome again.
@@ -505,6 +568,28 @@ export class ChatController {
       }
       this.welcomeStep = "memory";
     }
+  }
+
+  /** Memory on, welcome unfinished, me.md still the starter template. */
+  private async isFreshWelcome(folder: vscode.WorkspaceFolder): Promise<boolean> {
+    if (!this.memoryOn || this.storage.get<boolean>(WELCOMED_KEY)) {
+      return false;
+    }
+    let me: string | undefined;
+    try {
+      me = await nodeBrainFs.readFile(path.join(folder.uri.fsPath, "brain", "me.md"));
+    } catch {
+      me = undefined;
+    }
+    return isStarterMe(me);
+  }
+
+  /** The short memory note, once per chat no matter which path posts it. */
+  private postMemoryNoteOnce(): void {
+    if (this.history.some((entry) => entry.type === "memory")) {
+      return;
+    }
+    this.recordAndBroadcast({ type: "memory", text: WELCOME_MEMORY_TEXT, detail: WELCOME_MEMORY_DETAIL });
   }
 
   /**
@@ -1022,8 +1107,8 @@ export class ChatController {
    */
   private async slashFork(): Promise<void> {
     const { host, root } = await this.slashHost();
-    // The fork shows the conversation it came from: a copy at fork time.
-    const transcript = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
+    // The fork shows the conversation it came from: both sides plus step rows.
+    const transcript = buildForkTranscript(this.history);
     this.tabHost.onForkTab(await host.forkSession(root), transcript, this.sessionTopic);
   }
 
@@ -1156,6 +1241,48 @@ export class ChatController {
     }
   }
 
+  public async setApprovalsLevel(mode: string): Promise<void> {
+    if (!(APPROVAL_CHOICES as string[]).includes(mode)) {
+      return;
+    }
+    const choice = mode as ApprovalChoice;
+    if (choice === this.lastApprovals) {
+      return;
+    }
+    try {
+      const { host, root } = await this.slashHost();
+      if (choice === "all") {
+        const confirm = await vscode.window.showWarningMessage(
+          "Muse will run any command in this chat without asking — even outside this folder. Turn it on for this chat only?",
+          "Turn on All",
+          "Cancel",
+        );
+        if (confirm !== "Turn on All") {
+          return;
+        }
+        await host.setApprovalAll(root);
+        this.lastApprovals = "all";
+        this.storeSet(this.tabKey(APPROVAL_ALL_KEY), this.loadSessionId() ?? "");
+      } else {
+        if (this.lastApprovals === "all") {
+          await host.clearApprovalAll(root);
+          this.storeSet(this.tabKey(APPROVAL_ALL_KEY), undefined);
+        }
+        host.setLocalApprovalMode(choice);
+        this.lastApprovals = choice;
+        this.storeSet(this.tabKey(APPROVALS_KEY), choice);
+      }
+      this.broadcast({ type: "approvals", mode: this.lastApprovals, modes: approvalsMenu(this.lastApprovals) });
+    } catch (error) {
+      this.recordAndBroadcast({
+        type: "notice",
+        kind: "error",
+        text: `Couldn't switch approvals: ${commandErrorText(error)}.`,
+      });
+      this.broadcast({ type: "approvals", mode: this.lastApprovals, modes: approvalsMenu(this.lastApprovals) });
+    }
+  }
+
   /** Clear the panel view: the chat, undos and brain all stay. */
   public clearView(): void {
     this.history = [];
@@ -1251,7 +1378,7 @@ export class ChatController {
     this.welcomeStep = undefined;
     this.storeSet(WELCOMED_KEY, true);
     this.broadcast({ type: "welcomeSkip", show: false });
-    this.recordAndBroadcast({ type: "memory", text: WELCOME_MEMORY_TEXT, detail: WELCOME_MEMORY_DETAIL });
+    this.postMemoryNoteOnce();
     this.recordAndBroadcast({ type: "assistant", id: "welcome-next", text: "What's first?", at: Date.now() });
     this.onWelcomeOutline();
   }
@@ -1626,6 +1753,10 @@ export class ChatController {
     if (target.files.length > 10) {
       lines.push(`…and ${target.files.length - 10} more`);
     }
+    const warning = undoCommitWarning(target.committed);
+    if (warning) {
+      lines.unshift(warning, "");
+    }
     const time = formatUndoTime(new Date(target.at));
     const choice = await vscode.window.showInformationMessage(
       `Put back ${countFiles(target.files.length)} as they were at ${time}?`,
@@ -1776,16 +1907,16 @@ export class ChatController {
     return this.gitBinCache;
   }
 
-  private async takeBeforeSnapshot(
-    folder: vscode.WorkspaceFolder,
-  ): Promise<{ sha: string; at: number; excluded: string[] } | undefined> {
+  private async takeBeforeSnapshot(folder: vscode.WorkspaceFolder): Promise<BeforeState | undefined> {
     try {
       const shadow = await this.shadowFor(folder);
       if (!shadow) {
         return undefined;
       }
       const snapshot = await shadow.snapshot("before turn");
-      return { sha: snapshot.sha, at: Date.now(), excluded: snapshot.excluded };
+      const bin = this.shadowCache?.bin ?? "";
+      const headBefore = await readGitHead(bin, folder.uri.fsPath);
+      return { sha: snapshot.sha, at: Date.now(), excluded: snapshot.excluded, headBefore };
     } catch (error) {
       this.snapshotFailed(error);
       return undefined;
@@ -1793,9 +1924,7 @@ export class ChatController {
   }
 
   /** After-snapshot, then an Undo button when the turn changed files. */
-  private async finishTurnSnapshot(
-    before: { sha: string; at: number; excluded: string[] } | undefined,
-  ): Promise<void> {
+  private async finishTurnSnapshot(before: BeforeState | undefined): Promise<void> {
     if (!before) {
       return;
     }
@@ -1813,6 +1942,8 @@ export class ChatController {
       if (files.length === 0) {
         return;
       }
+      const headAfter = await readGitHead(this.shadowCache?.bin ?? "", folder.uri.fsPath);
+      const committed = gitHeadMoved(before.headBefore, headAfter);
       this.undoCounter += 1;
       const id = `undo-${this.undoCounter}`;
       // Past the reloaded high-water mark, so a suffix replay (whose user
@@ -1831,6 +1962,7 @@ export class ChatController {
         anchor,
         undone: false,
         session: this.museSessionId ?? "",
+        ...(committed ? { committed: true } : {}),
       });
       this.persistUndos();
       this.recordAndBroadcast({ type: "undo", id, label: `↩ Undo that (${countFiles(files.length)})` });
@@ -1971,20 +2103,32 @@ export class ChatController {
         const resumeId = savedId.trim() || undefined;
         this.replayer = new UndoReplayer([...this.undos.values()], resumeId);
         try {
+          // A fork replays its seed, never server history: the seed is the
+          // full source transcript (both sides plus step rows).
+          const forkSeed =
+            this.tabHost.seed?.transcript !== undefined
+              ? cleanTranscript(this.tabHost.seed.transcript)
+              : undefined;
           let shown = 0;
+          this.quietAttach = forkSeed !== undefined;
           try {
             shown = await host.prepare(folder.uri.fsPath);
           } catch {
             // Leave the panel usable; send() surfaces startup problems properly.
             shown = 0;
+          } finally {
+            this.quietAttach = false;
           }
-          if (shown === 0) {
-            const own = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
-            // A forked tab replays the source chat's transcript at fork time.
-            const stored = own.length > 0 ? own : cleanTranscript(this.tabHost.seed?.transcript);
-            this.log(
-              `Resume: stored transcript (${stored.length} entries${own.length === 0 && stored.length > 0 ? ", from fork" : ""})`,
-            );
+          if (forkSeed !== undefined || shown === 0) {
+            let stored: TranscriptEntry[];
+            if (forkSeed !== undefined) {
+              stored = forkSeed;
+              this.log(`Resume: fork seed (${stored.length} entries)`);
+            } else {
+              const own = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
+              stored = own.length > 0 ? own : cleanTranscript(this.tabHost.seed?.transcript);
+              this.log(`Resume: stored transcript (${stored.length} entries)`);
+            }
             const replayed = new Set<string>();
             stored.forEach((entry, index) => {
               if (entry.role === "undo" && entry.id) {
@@ -1993,6 +2137,21 @@ export class ChatController {
                 this.log(`${entry.id}: replayed from stored transcript`);
               } else if (entry.role === "nudge" && entry.id && entry.answer) {
                 this.recordAndBroadcast({ type: "nudgeAnswered", id: entry.id, answer: entry.answer });
+              } else if (entry.role === "tool") {
+                this.recordAndBroadcast({
+                  type: "tool",
+                  id: entry.id ?? `stored-${index}`,
+                  text: entry.text,
+                  done: true,
+                  ...(entry.group ? { group: entry.group as StepGroup } : {}),
+                  ...(entry.failed === true ? { failed: true } : {}),
+                });
+              } else if (entry.role === "thinking") {
+                this.recordAndBroadcast({
+                  type: "thinking",
+                  id: entry.id ?? `stored-${index}`,
+                  text: entry.text,
+                });
               } else {
                 this.recordAndBroadcast(
                   entry.role === "user"
@@ -2421,6 +2580,12 @@ export class ChatController {
     }
   }
 
+  /** A session left in All when the window closed (the host reverts it on resume). */
+  private approvalAllFlag(): string | undefined {
+    const flag = this.storage.get<unknown>(this.tabKey(APPROVAL_ALL_KEY));
+    return typeof flag === "string" && flag !== "" ? flag : undefined;
+  }
+
   /** Forget the saved API key. The host is rebuilt keyless on next send. */
   public async forgetApiKey(): Promise<void> {
     try {
@@ -2431,6 +2596,13 @@ export class ChatController {
     if (this.host) {
       await this.host.dispose().catch(() => undefined);
       this.host = undefined;
+    }
+    if (this.lastApprovals === "all") {
+      // The rebuilt host reverts the session via the leftover flag; the UI
+      // goes back to Auto now so the two never disagree.
+      this.lastApprovals = "auto";
+      this.storeSet(this.tabKey(APPROVALS_KEY), "auto");
+      this.broadcast({ type: "approvals", mode: "auto", modes: approvalsMenu("auto") });
     }
     void this.globalState?.update(FIRST_RUN_READY_KEY, undefined);
     this.recordAndBroadcast({
@@ -2450,6 +2622,9 @@ export class ChatController {
       trustWorkspace,
       apiKey,
       onSetupNeeded: (info) => this.setupNeeded(info),
+      approvalMode: this.lastApprovals === "ask" ? "ask" : "auto",
+      approvalAllLeftOn: this.approvalAllFlag(),
+      onApprovalAllReverted: () => this.storeSet(this.tabKey(APPROVAL_ALL_KEY), undefined),
       emit: (event) => this.onHostEvent(event),
       askApproval: (card) => this.askApproval(card),
       log: (message) => this.log(message),
@@ -2522,6 +2697,14 @@ export class ChatController {
   }
 
   private onHostEvent(event: MuseHostEvent): void {
+    // Fork attach: the session still connects, but its history stays out —
+    // the seed transcript replays instead, steps and all.
+    if (
+      this.quietAttach &&
+      (event.type === "user" || event.type === "assistant" || event.type === "thinking")
+    ) {
+      return;
+    }
     // State updates, not chat: they apply during saves too.
     if (event.type === "usage") {
       this.recordUsage(event.usage);
@@ -2849,6 +3032,10 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
   }
   if (message.type === "effortSet" && typeof message.level === "string") {
     void controller.setEffortLevel(message.level);
+    return;
+  }
+  if (message.type === "approvalsSet" && typeof message.mode === "string") {
+    void controller.setApprovalsLevel(message.mode);
     return;
   }
   if (

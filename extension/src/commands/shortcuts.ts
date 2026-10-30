@@ -4,9 +4,12 @@
 // globalState so they follow the user to every project.
 
 import {
+  APPROVAL_CHOICES,
+  APPROVAL_LABELS,
   EFFORT_LABELS,
   EFFORT_LEVELS,
   findSlashCommand,
+  type ApprovalChoice,
   type EffortLevel,
 } from "./slash.js";
 
@@ -120,4 +123,15 @@ export interface EffortMenuRow {
 /** The Effort button menu: every supported level, the current one ticked. */
 export function effortMenu(current: EffortLevel): EffortMenuRow[] {
   return EFFORT_LEVELS.map((id) => ({ id, label: EFFORT_LABELS[id], ticked: id === current }));
+}
+
+export interface ApprovalsMenuRow {
+  id: ApprovalChoice;
+  label: string;
+  ticked: boolean;
+}
+
+/** The Approvals button menu: Ask, Auto, All, the current one ticked. */
+export function approvalsMenu(current: ApprovalChoice): ApprovalsMenuRow[] {
+  return APPROVAL_CHOICES.map((id) => ({ id, label: APPROVAL_LABELS[id], ticked: id === current }));
 }
