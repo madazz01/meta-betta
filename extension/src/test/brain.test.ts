@@ -679,9 +679,9 @@ describe("welcome words", () => {
     );
   });
 
-  it("memory message links the Brain panel and Save my day", () => {
+  it("memory message links the Brain panel and Save", () => {
     assert.ok(WELCOME_MEMORY_TEXT.includes("`brain/`"));
-    assert.ok(WELCOME_MEMORY_TEXT.includes("Save my day"));
+    assert.ok(WELCOME_MEMORY_TEXT.includes("**Save** writes up"));
     assert.ok(WELCOME_MEMORY_TEXT.includes("Here's where we're up to"));
   });
 

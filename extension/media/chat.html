@@ -11,14 +11,16 @@
   <main id="chat">
     <header id="topbar">
       <button id="session-label" class="label-btn" type="button" title="Rename this chat">…</button>
-      <button id="save-day" class="header-btn" type="button" title="Write what happened into the brain">Save my day</button>
-      <button id="undo-last" class="header-btn" type="button" title="Nothing to undo" disabled>↩ Undo</button>
-      <button id="new-chat" class="header-btn" type="button" title="Start a new chat">New chat</button>
-      <span class="header-divider" aria-hidden="true"></span>
-      <button id="header-goal" class="header-btn" type="button" title="Pin a goal for this chat, with a progress bar">Goal</button>
-      <button id="header-side" class="header-btn" type="button" title="Ask something off-topic without muddling the main job">Side question</button>
-      <button id="header-fork" class="header-btn" type="button" title="Try another way from here, keeping this chat">Fork</button>
-      <button id="header-usage" class="header-btn" type="button" title="See what this chat is costing">Usage</button>
+      <div class="header-actions">
+        <button id="save-day" class="header-btn" type="button" title="Save my day">Save</button>
+        <button id="undo-last" class="header-btn" type="button" title="Undo the last change" disabled>↩ Undo</button>
+        <button id="new-chat" class="header-btn" type="button" title="New chat in a new tab">New</button>
+        <span class="header-divider" aria-hidden="true"></span>
+        <button id="header-goal" class="header-btn little" type="button" title="Set a goal">Goal</button>
+        <button id="header-side" class="header-btn little" type="button" title="Side question">Side</button>
+        <button id="header-fork" class="header-btn little" type="button" title="Fork this chat into a new tab">Fork</button>
+        <button id="header-usage" class="header-btn little" type="button" title="Usage so far">Usage</button>
+      </div>
       <button id="skip-welcome" class="btn small" type="button" hidden>Skip</button>
     </header>
     <div id="goal" hidden></div>

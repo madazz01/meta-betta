@@ -42,7 +42,7 @@ Keep every reply to one or two short lines. Don't explain how the memory works.`
 /** The one short memory message, shown by the extension after the welcome. */
 export const WELCOME_MEMORY_TEXT =
   "Quick one on how I remember: notes on you and this project live in `brain/` (the Brain panel; edit anything). " +
-  "I quick-save as we go, and 💾 **Save my day** writes up where we're up to. " +
+  "I quick-save as we go, and **Save** writes up where we're up to. " +
   "Close everything whenever; next time I start with 'Here's where we're up to'.";
 
 /** Behind the "How does this work?" link under the memory message. */
@@ -50,4 +50,4 @@ export const WELCOME_MEMORY_DETAIL =
   "Your brain is stored in this project, on your machine, and it's yours: easy to find, share, move or back up " +
   "(set a backup folder in Settings). I read it each session so I can help, and on a contributor model Meta may use " +
   "what I read, so keep passwords and keys out of it.\n\n" +
-  "Quick saves only touch the project notes and today's log — the rest changes only when you press Save my day.";
+  "Quick saves only touch the project notes and today's log — the rest changes only when you press Save.";

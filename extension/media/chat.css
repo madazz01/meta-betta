@@ -45,6 +45,15 @@ body {
   text-decoration: underline;
 }
 
+.header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .header-btn {
   background-color: var(--vscode-button-secondaryBackground);
   color: var(--vscode-button-secondaryForeground);
@@ -65,6 +74,19 @@ body {
 .header-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* The four command shortcuts: lighter little pills. */
+.header-btn.little {
+  background-color: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.8em;
+}
+
+.header-btn.little:hover:not(:disabled) {
+  background-color: var(--vscode-button-secondaryHoverBackground);
 }
 
 .header-divider {
