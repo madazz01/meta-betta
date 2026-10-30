@@ -65,6 +65,12 @@ export function adoptsStoredLabel(uid: string, seed?: TabSeed): boolean {
   return uid === MAIN_TAB_UID && !seed?.labelId;
 }
 
+/** A forked tab's topic: the source topic, marked. Blank stays blank. */
+export function forkTopic(topic: string): string {
+  const clean = topic.trim();
+  return clean === "" ? "" : `${clean} (fork)`;
+}
+
 export interface LegacyChat {
   session?: string;
   label?: { id: string; topic: string };
@@ -179,13 +185,21 @@ export function formatPeekBackground(label: string, entries: TranscriptEntry[]):
 }
 
 /**
- * One output-channel line per queue retry: the tab, what's waiting and who
- * holds the lock.
+ * Output-channel lines for queue state changes only: a message starts
+ * waiting, leaves for the host, or is dropped. Retries stay silent.
  */
-export function queueRetryNote(uid: string, waiting: number, holder: string | undefined): string {
+export function queueQueuedNote(uid: string, waiting: number, holder: string | undefined): string {
   return holder === undefined
-    ? `queue: ${uid} retrying (${waiting} waiting)`
-    : `queue: ${uid} retrying (${waiting} waiting, held by ${holder})`;
+    ? `queue: ${uid} queued (${waiting} waiting)`
+    : `queue: ${uid} queued (${waiting} waiting, held by ${holder})`;
+}
+
+export function queueSentNote(uid: string): string {
+  return `queue: ${uid} sent`;
+}
+
+export function queueDroppedNote(uid: string, waiting: number, why: string): string {
+  return `queue: ${uid} dropped ${waiting} waiting (${why})`;
 }
 
 /** Typed messages waiting for the lock, oldest first. */

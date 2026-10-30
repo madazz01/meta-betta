@@ -7,6 +7,7 @@ import { ChatViewProvider, readOpenIn } from "./chatView.js";
 import {
   cleanTabRecords,
   createTabUid,
+  forkTopic,
   MAIN_TAB_UID,
   reviveSeed,
   tabTitle,
@@ -187,8 +188,8 @@ function createController(uid: string, seed?: TabSeed): ChatController {
       seed,
       onChanged: (record) => tabChanged(uid, record),
       onNewTab: () => openTab(createTabUid()),
-      onForkTab: (sessionId, transcript) =>
-        openTab(createTabUid(), { session: sessionId, catchUp: true, transcript }),
+      onForkTab: (sessionId, transcript, topic) =>
+        openTab(createTabUid(), { session: sessionId, catchUp: true, transcript, topic: forkTopic(topic) }),
       peekChats: () => peekChats(),
       labelOf: (other) => labelOf(other),
       revealTab: (other) => revealTab(other),

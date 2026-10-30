@@ -27,6 +27,10 @@
   const LONG_GAP_MS = 30 * 60 * 1000;
 
   let running = false;
+  let dingEnabled = true;
+  let turnStartAt = 0;
+  let dingAudio = null;
+  const LONG_TURN_MS = 60 * 1000;
   let catchingUpEl = null;
   let turnEl = null;
   let lastStampAt = 0;
@@ -54,6 +58,50 @@
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function userAway() {
+    return document.hidden || !document.hasFocus();
+  }
+
+  // A short soft two-note chime, made up on the spot (no sound file).
+  function playDing() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) {
+        return;
+      }
+      dingAudio = dingAudio || new Ctx();
+      if (dingAudio.state === "suspended") {
+        // Browsers only allow sound after you've clicked something once.
+        void dingAudio.resume();
+        return;
+      }
+      const now = dingAudio.currentTime;
+      [660, 880].forEach((freq, index) => {
+        const osc = dingAudio.createOscillator();
+        const gain = dingAudio.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const start = now + index * 0.13;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.15, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
+        osc.connect(gain);
+        gain.connect(dingAudio.destination);
+        osc.start(start);
+        osc.stop(start + 0.13);
+      });
+    } catch {
+      // Silence is a fine fallback.
+    }
+  }
+
+  // Muse is stuck waiting on you mid-turn: one chime, only if you left.
+  function maybeAttentionDing() {
+    if (running && dingEnabled && userAway()) {
+      playDing();
+    }
   }
 
   function hideEmptyState() {
@@ -90,6 +138,16 @@
   }
 
   function setRunning(next) {
+    if (next) {
+      turnStartAt = Date.now();
+    } else {
+      const elapsed = turnStartAt === 0 ? 0 : Date.now() - turnStartAt;
+      turnStartAt = 0;
+      // A long turn finishing while you looked away gets one soft chime.
+      if (elapsed > LONG_TURN_MS && dingEnabled && userAway()) {
+        playDing();
+      }
+    }
     running = next;
     updateComposer();
     sendButton.textContent = next ? "Stop" : "Send";
@@ -308,14 +366,26 @@
     scrollToBottom();
   }
 
+  function cardNeedsAnswer(message) {
+    if (Array.isArray(message.buttons) && message.buttons.length > 0) {
+      return true;
+    }
+    const spec = message.input;
+    return !!(spec && typeof spec.id === "string" && typeof spec.placeholder === "string");
+  }
+
   function renderCard(message) {
     hideEmptyState();
+    const isNew = !cardEls.has(message.id);
     let card = cardEls.get(message.id);
     if (!card) {
       card = document.createElement("div");
       card.className = "card";
       stepParent().appendChild(card);
       cardEls.set(message.id, card);
+    }
+    if (isNew && cardNeedsAnswer(message)) {
+      maybeAttentionDing();
     }
     card.replaceChildren();
     const title = document.createElement("div");
@@ -695,8 +765,12 @@
       pickerShown = null;
       return;
     }
+    const isNew = pickerShown !== message.id;
     pickerShown = message.id;
     pickerSelected = 0;
+    if (isNew) {
+      maybeAttentionDing();
+    }
     const wrap = document.getElementById("composer-wrap");
     const panel = document.createElement("div");
     panel.id = "picker";
@@ -1196,6 +1270,11 @@
         }
         if (typeof message.level === "string") {
           updateEffort(message.level);
+        }
+        break;
+      case "ding":
+        if (typeof message.enabled === "boolean") {
+          dingEnabled = message.enabled;
         }
         break;
       case "shortcuts":

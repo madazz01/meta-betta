@@ -7,9 +7,12 @@ import {
   createTabUid,
   findPeekTarget,
   formatPeekBackground,
+  forkTopic,
   MAIN_TAB_UID,
   MessageQueue,
-  queueRetryNote,
+  queueDroppedNote,
+  queueQueuedNote,
+  queueSentNote,
   reviveSeed,
   tabStorageKey,
   tabTitle,
@@ -162,9 +165,20 @@ describe("formatPeekBackground", () => {
   });
 });
 
-describe("queueRetryNote", () => {
-  it("names the tab, the waiting count and the holder", () => {
-    assert.equal(queueRetryNote("tab-x", 2, MAIN_TAB_UID), "queue: tab-x retrying (2 waiting, held by main)");
-    assert.equal(queueRetryNote("tab-x", 1, undefined), "queue: tab-x retrying (1 waiting)");
+describe("forkTopic", () => {
+  it("marks the source topic, and leaves blank blank", () => {
+    assert.equal(forkTopic("todo"), "todo (fork)");
+    assert.equal(forkTopic("  todo  "), "todo (fork)");
+    assert.equal(forkTopic(""), "");
+    assert.equal(forkTopic("   "), "");
+  });
+});
+
+describe("queue notes", () => {
+  it("logs state changes with the tab id: queued, sent, dropped", () => {
+    assert.equal(queueQueuedNote("tab-x", 2, MAIN_TAB_UID), "queue: tab-x queued (2 waiting, held by main)");
+    assert.equal(queueQueuedNote("tab-x", 1, undefined), "queue: tab-x queued (1 waiting)");
+    assert.equal(queueSentNote("tab-x"), "queue: tab-x sent");
+    assert.equal(queueDroppedNote("tab-x", 2, "switching chats"), "queue: tab-x dropped 2 waiting (switching chats)");
   });
 });

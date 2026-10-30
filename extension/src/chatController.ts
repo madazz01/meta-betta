@@ -117,7 +117,9 @@ import {
   formatPeekBackground,
   MAIN_TAB_UID,
   MessageQueue,
-  queueRetryNote,
+  queueDroppedNote,
+  queueQueuedNote,
+  queueSentNote,
   tabStorageKey,
   type PeekCandidate,
   type TabRecord,
@@ -143,7 +145,7 @@ export interface TabHost {
   /** New pill: open a fresh tab and focus it. */
   onNewTab: () => void;
   /** Fork pill: open a tab on the forked session and focus it. */
-  onForkTab: (sessionId: string, transcript: TranscriptEntry[]) => void;
+  onForkTab: (sessionId: string, transcript: TranscriptEntry[], topic: string) => void;
   /** Open + recent chats (labels/topics) for the peek matcher. */
   peekChats: () => PeekCandidate[];
   /** Another tab's header label, for the busy line. */
@@ -322,6 +324,8 @@ export class ChatController {
     sink.post({ type: "goal", goal: this.lastGoal });
     sink.post({ type: "effort", level: this.lastEffort, levels: effortMenu(this.lastEffort) });
     sink.post({ type: "shortcuts", shortcuts: shortcutDefs(), slots: this.shortcutSlots() });
+    const ding = vscode.workspace.getConfiguration("metaBetta").get<boolean>("dingWhenDone", true);
+    sink.post({ type: "ding", enabled: ding });
     void this.updateHeaderUndo();
     if (!vscode.workspace.workspaceFolders?.[0]) {
       sink.post({ type: "noFolder" });
@@ -550,8 +554,17 @@ export class ChatController {
       this.showBusy();
       return;
     }
+    this.log(queueQueuedNote(this.tabHost.uid, this.queue.size, lockHolder()));
     this.showBusy();
     this.ensureRetry();
+  }
+
+  /** Drop waiting drafts, saying so when there were any. */
+  private dropQueue(why: string): void {
+    if (this.queue.size > 0) {
+      this.log(queueDroppedNote(this.tabHost.uid, this.queue.size, why));
+    }
+    this.queue.clear();
   }
 
   private ensureRetry(): void {
@@ -565,20 +578,17 @@ export class ChatController {
     if (this.flushing) {
       return;
     }
-    const holder = lockHolder();
-    if (holder !== undefined) {
-      this.log(queueRetryNote(this.tabHost.uid, this.queue.size, holder));
+    if (lockHolder() !== undefined) {
+      // Waiting stays silent; the queue logs state changes only.
       this.showBusy();
       return;
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
-    if (this.queue.size > 0 || this.pendingSave === "full") {
-      this.log(queueRetryNote(this.tabHost.uid, this.queue.size, undefined));
-    }
     const next = this.queue.shift();
     this.flushing = true;
     try {
       if (next !== undefined && folder) {
+        this.log(queueSentNote(this.tabHost.uid));
         await this.sendNow(folder, next);
       } else if (
         next === undefined &&
@@ -859,7 +869,7 @@ export class ChatController {
     this.broadcast({ type: "welcomeSkip", show: false });
     this.history = [];
     // Queued drafts belong to the old chat; switching drops them.
-    this.queue.clear();
+    this.dropQueue("switching chats");
     this.settleRetry();
     this.broadcast({ type: "clear" });
     this.running = true;
@@ -973,7 +983,7 @@ export class ChatController {
     const { host, root } = await this.slashHost();
     // The fork shows the conversation it came from: a copy at fork time.
     const transcript = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
-    this.tabHost.onForkTab(await host.forkSession(root), transcript);
+    this.tabHost.onForkTab(await host.forkSession(root), transcript, this.sessionTopic);
   }
 
   private async slashListTasks(): Promise<TaskRow[]> {
@@ -1853,7 +1863,7 @@ export class ChatController {
       clearInterval(this.retryTimer);
       this.retryTimer = undefined;
     }
-    this.queue.clear();
+    this.dropQueue("closing");
     const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
     delete live[this.sessionId];
     try {
@@ -2046,6 +2056,14 @@ export class ChatController {
         this.diverged = true;
         this.sessionId = createSessionId();
       }
+      this.broadcastSessionLabel();
+      this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
+      this.heartbeat();
+      return;
+    }
+    if (seed?.topic) {
+      // A forked tab inherits the source topic; its id stays its own.
+      this.sessionTopic = seed.topic;
       this.broadcastSessionLabel();
       this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
       this.heartbeat();

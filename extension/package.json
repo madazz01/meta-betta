@@ -107,6 +107,11 @@
           "type": "boolean",
           "default": true,
           "description": "Muse's Windows sandbox has a bug in serve mode. When on, the sandbox is off and Muse asks before every command."
+        },
+        "metaBetta.dingWhenDone": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a soft chime when you've looked away and Muse needs you, or a long turn finishes."
         }
       }
     }
