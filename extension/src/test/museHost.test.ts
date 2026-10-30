@@ -341,6 +341,31 @@ describe("turn lock", () => {
     releaseTurn("tab-b");
     await fake.host.dispose();
   });
+
+  it("lets a side question run while a main turn holds the lock", async () => {
+    const fake = fakeCommands({
+      commands: { "session/sideChat": { session: { sessionId: "side-1" } } },
+      sessions: {
+        "side-1": {
+          sessionId: "side-1",
+          sendUserTurn: async () =>
+            cannedTurn([
+              { kind: "agentMessage", itemId: "a1", revision: 1, status: "completed", text: "Side." },
+            ]),
+          onApproval: () => undefined,
+          onApprovalError: () => undefined,
+          fold: { items: { list: () => [] } },
+        },
+      },
+    });
+    assert.equal(acquireTurn("tab-b"), true);
+    try {
+      assert.equal(await fake.host.sideAsk(process.cwd(), "Why?"), "Side.");
+    } finally {
+      releaseTurn("tab-b");
+    }
+    await fake.host.dispose();
+  });
 });
 
 describe("prompt mode", () => {

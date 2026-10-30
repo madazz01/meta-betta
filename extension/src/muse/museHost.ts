@@ -617,15 +617,9 @@ export class MuseHost {
     question: string,
     onProgress?: (line: string) => void,
   ): Promise<string> {
-    // A side question is a turn too: it waits for the lock like the rest.
-    if (!acquireTurn(this.turnOwner())) {
-      throw new TurnBusyError();
-    }
-    try {
-      return await this.askSide(workspaceRoot, question, onProgress);
-    } finally {
-      releaseTurn(this.turnOwner());
-    }
+    // Side questions never take the lock: the whole point is asking while
+    // Muse is working, in this tab or another.
+    return this.askSide(workspaceRoot, question, onProgress);
   }
 
   private async askSide(
