@@ -619,13 +619,24 @@
     return row;
   }
 
-  function positionPopup(anchor) {
-    popupEl.style.left = "";
-    popupEl.style.right = "";
-    if (anchor.offsetLeft + 300 > composerWrapEl.clientWidth) {
-      popupEl.style.right = "0";
+  // Above the button that opened it: left edges meet for pills, right
+  // edges meet for Effort, clamped to stay inside the panel. Runs while
+  // the popup is visible so its width measures for real.
+  function positionPopup(anchor, align) {
+    const wrapBox = composerWrapEl.getBoundingClientRect();
+    const box = anchor.getBoundingClientRect();
+    const wrapWidth = composerWrapEl.clientWidth;
+    popupEl.style.maxWidth = `${wrapWidth}px`;
+    const width = popupEl.offsetWidth;
+    const maxStart = Math.max(0, wrapWidth - width);
+    if (align === "right") {
+      const right = Math.max(0, wrapBox.right - box.right);
+      popupEl.style.left = "auto";
+      popupEl.style.right = `${Math.min(right, maxStart)}px`;
     } else {
-      popupEl.style.left = `${anchor.offsetLeft}px`;
+      const left = Math.max(0, box.left - wrapBox.left);
+      popupEl.style.right = "auto";
+      popupEl.style.left = `${Math.min(left, maxStart)}px`;
     }
   }
 
@@ -650,7 +661,7 @@
     });
     popupEl.appendChild(reset);
     popupEl.hidden = false;
-    positionPopup(anchor);
+    positionPopup(anchor, "left");
   }
 
   function openEffortMenu() {
@@ -667,7 +678,7 @@
       );
     });
     popupEl.hidden = false;
-    positionPopup(effortButton);
+    positionPopup(effortButton, "right");
   }
 
   function closeSlashMenu() {
