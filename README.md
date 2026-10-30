@@ -6,6 +6,12 @@ A friendly workmate for Meta's Muse Code: a chat panel in VS Code, with a brain 
 
 Built for the Meta Global AI Developer Hackathon (27 Oct – 4 Nov 2026). Everything in this repo was written during the hackathon.
 
+## Why I entered
+
+The prize money would be lovely, not gonna lie. But that's not really why I do hackathons. I like pushing myself to hit a goal with a hard deadline, and seeing what I can actually create in that time. A focused time limit is the best way I know to test myself.
+
+9 months in since the first time I ever used AI and counting.
+
 ## Who built what
 
 Meta Betta is built the way it asks you to work: one human steering, AIs doing the grunt work, nothing forgotten between sessions.
@@ -15,6 +21,10 @@ Meta Betta is built the way it asks you to work: one human steering, AIs doing t
 - **Claude Code** (Anthropic) — wrote the build briefs ([`AGENTS.md`](AGENTS.md), [`docs/briefs/`](docs/briefs/)), the early SDK spike ([`spike/`](spike/)), and reviewed each brief's work. Its commits end with `Co-Authored-By: Claude …`.
 
 `git log` shows who did each step.
+
+## What we found while building
+
+Driving Muse through its SDK every day turned up a few things: a Windows sandbox bug in serve mode (and a safe workaround), how to build a real Stop button, and a notification gotcha. All written up with repro scripts in [`WHAT-WE-FOUND.md`](WHAT-WE-FOUND.md).
 
 ## Free for everyone
 
