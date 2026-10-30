@@ -5,6 +5,7 @@
 
 import { formatSaveTime, formatUpdated } from "../brain/brain.js";
 import { shortReason } from "../lib/startup.js";
+import { TurnBusyError } from "../muse/turnLock.js";
 import { formatCost, formatTokens, type SessionUsageTotals } from "../lib/usage.js";
 
 export interface ParsedSlash {
@@ -137,7 +138,7 @@ export interface SlashContext {
   goal(op: "set" | "edit" | "pause" | "resume" | "clear", text?: string): Promise<void>;
   currentGoal(): GoalInfo | null;
   sideAsk(question: string, onProgress?: (line: string) => void): Promise<string>;
-  /** Fork from here and switch to the new chat. */
+  /** Fork from here and open the fork in a new tab. */
   fork(): Promise<void>;
   listTasks(): Promise<TaskRow[]>;
   stopTask(taskId: string): Promise<void>;
@@ -613,6 +614,10 @@ async function sideRun(ctx: SlashContext, args: string): Promise<void> {
       });
       ctx.updateCard(id, { title: "Side question", body: `**You:** ${text}\n\n${answer}` });
     } catch (error) {
+      if (error instanceof TurnBusyError) {
+        ctx.updateCard(id, { title: "Side question", body: `**You:** ${text}\n\n${error.message}` });
+        return;
+      }
       ctx.updateCard(id, {
         title: "Side question",
         body: `**You:** ${text}\n\nCouldn't answer that: ${commandErrorText(error)}.`,
@@ -638,7 +643,7 @@ async function sideRun(ctx: SlashContext, args: string): Promise<void> {
 async function forkRun(ctx: SlashContext): Promise<void> {
   try {
     await ctx.fork();
-    ctx.notice("info", "Forked — trying another way from here. The old chat stays saved.");
+    ctx.notice("info", "Forked into a new tab — the old chat stays saved.");
   } catch (error) {
     ctx.notice("error", `Couldn't fork: ${commandErrorText(error)}.`);
   }

@@ -2,34 +2,53 @@ import * as vscode from "vscode";
 import { type ChatController, type ChatSink, routeViewMessage } from "./chatController.js";
 import { buildChatHtml } from "./chatHtml.js";
 
-let panel: vscode.WebviewPanel | undefined;
+export const CHAT_PANEL_VIEW_TYPE = "metaBetta.chatPanel";
 
-/** Open the chat as an editor tab, shared with the sidebar through the controller. */
-export function openChatPanel(extensionUri: vscode.Uri, controller: ChatController): void {
-  if (panel) {
-    panel.reveal(vscode.ViewColumn.Active);
-    return;
-  }
-  const webviewPanel = vscode.window.createWebviewPanel("metaBetta.chatPanel", "Meta Betta", vscode.ViewColumn.Active, {
+/** Open a chat tab for a controller, focused. */
+export function openChatTab(
+  extensionUri: vscode.Uri,
+  controller: ChatController,
+  title: string,
+  onDispose: () => void,
+): vscode.WebviewPanel {
+  const panel = vscode.window.createWebviewPanel(
+    CHAT_PANEL_VIEW_TYPE,
+    title,
+    vscode.ViewColumn.Active,
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media")],
+    },
+  );
+  bindChatPanel(panel, extensionUri, controller, onDispose);
+  panel.reveal(vscode.ViewColumn.Active);
+  return panel;
+}
+
+/** Attach a controller to a panel (fresh or revived after reload). */
+export function bindChatPanel(
+  panel: vscode.WebviewPanel,
+  extensionUri: vscode.Uri,
+  controller: ChatController,
+  onDispose: () => void,
+): void {
+  panel.webview.options = {
     enableScripts: true,
-    retainContextWhenHidden: true,
     localResourceRoots: [vscode.Uri.joinPath(extensionUri, "media")],
-  });
-  panel = webviewPanel;
-  webviewPanel.webview.html = buildChatHtml(webviewPanel.webview, extensionUri, "chat");
+  };
+  panel.webview.html = buildChatHtml(panel.webview, extensionUri, "chat");
   const sink: ChatSink = {
     post: (message: unknown) => {
-      void webviewPanel.webview.postMessage(message);
+      void panel.webview.postMessage(message);
     },
   };
   controller.bind(sink);
-  webviewPanel.webview.onDidReceiveMessage((message: unknown) => {
+  panel.webview.onDidReceiveMessage((message: unknown) => {
     routeViewMessage(controller, message);
   });
-  webviewPanel.onDidDispose(() => {
+  panel.onDidDispose(() => {
     controller.unbind(sink);
-    if (panel === webviewPanel) {
-      panel = undefined;
-    }
+    onDispose();
   });
 }

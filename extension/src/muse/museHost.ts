@@ -6,6 +6,7 @@
 // below are erased at compile time.
 
 import { execFile } from "node:child_process";
+import { acquire as acquireTurn, release as releaseTurn, TurnBusyError } from "./turnLock.js";
 import type {
   ApprovalFailureHandler,
   ApprovalHandler,
@@ -20,6 +21,7 @@ import type {
 } from "@muse-code/sdk/dist/src/msp.js";
 import { formatSaveTime, stripBackgroundPrefix } from "../brain/brain.js";
 import { isSavePrompt } from "../brain/prompts.js";
+import { MAIN_TAB_UID } from "../lib/chatTabs.js";
 import type {
   AllowanceSlice,
   EffortLevel,
@@ -118,6 +120,8 @@ export interface MuseHostOptions {
   sandboxWorkaround?: boolean;
   /** Test seam: pretend platform for the sandbox workaround. */
   platform?: string;
+  /** The tab holding turns on this host (the TurnLock holder). */
+  turnOwner?: string;
   /** Test seam: build the client instead of spawning `muse serve`. */
   createHost?: () => Promise<{ client: HostClient; connection: HostConnection }>;
   /** Saved session id storage; without it every start is a fresh session. */
@@ -240,6 +244,24 @@ export class MuseHost {
   public constructor(private readonly options: MuseHostOptions) {}
 
   public async send(text: string, workspaceRoot: string): Promise<void> {
+    // First, before any event: a lost race throws with nothing emitted, so
+    // the controller can queue the message behind the running turn.
+    if (!acquireTurn(this.turnOwner())) {
+      throw new TurnBusyError();
+    }
+    try {
+      await this.runTurn(text, workspaceRoot);
+    } finally {
+      releaseTurn(this.turnOwner());
+    }
+  }
+
+  /** The tab id this host takes turns for. */
+  private turnOwner(): string {
+    return this.options.turnOwner ?? MAIN_TAB_UID;
+  }
+
+  private async runTurn(text: string, workspaceRoot: string): Promise<void> {
     this.turnGen += 1;
     const state = newTurnState(this.turnGen);
     this.emit({ type: "turn", state: "started" });
@@ -309,6 +331,8 @@ export class MuseHost {
   public async dispose(): Promise<void> {
     this.turnGen += 1;
     this.currentTurnId = undefined;
+    // A turn stuck awaiting completion must not wedge every other tab.
+    releaseTurn(this.turnOwner());
     for (const finish of this.approvalWaiters) {
       finish(undefined);
     }
@@ -589,6 +613,22 @@ export class MuseHost {
    * Progress lines feed the side card; the log notes each step for diagnosis.
    */
   public async sideAsk(
+    workspaceRoot: string,
+    question: string,
+    onProgress?: (line: string) => void,
+  ): Promise<string> {
+    // A side question is a turn too: it waits for the lock like the rest.
+    if (!acquireTurn(this.turnOwner())) {
+      throw new TurnBusyError();
+    }
+    try {
+      return await this.askSide(workspaceRoot, question, onProgress);
+    } finally {
+      releaseTurn(this.turnOwner());
+    }
+  }
+
+  private async askSide(
     workspaceRoot: string,
     question: string,
     onProgress?: (line: string) => void,

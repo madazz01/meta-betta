@@ -32,6 +32,9 @@
   let catchingUpEl = null;
   let turnEl = null;
   let lastStampAt = 0;
+  let boxLocked = false;
+  let boxLockText = "";
+  const defaultPlaceholder = input.placeholder;
   const assistantEls = new Map();
   const thinkingEls = new Map();
   const toolEls = new Map();
@@ -77,9 +80,10 @@
     return turnEl;
   }
 
-  // The message box stays disabled while a picker is up.
+  // The message box stays disabled while a picker is up or the queue is full.
   function updateComposer() {
-    input.disabled = running || pickerQueue.length > 0;
+    input.disabled = running || pickerQueue.length > 0 || boxLocked;
+    input.placeholder = boxLocked && boxLockText ? boxLockText : defaultPlaceholder;
   }
 
   function setRunning(next) {
@@ -256,6 +260,39 @@
     if (chosen) {
       chosen.classList.add("chosen");
     }
+  }
+
+  // Another tab holds the lock: one slim line with two pills, kept fresh.
+  function onBusy(text) {
+    hideEmptyState();
+    let line = document.getElementById("busy");
+    if (!line) {
+      line = document.createElement("div");
+      line.id = "busy";
+      line.className = "busy-line";
+      const label = document.createElement("span");
+      label.className = "busy-text";
+      line.appendChild(label);
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "header-btn little";
+      go.textContent = "Go to it";
+      go.addEventListener("click", () => vscode.postMessage({ type: "goToHolder" }));
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "header-btn little";
+      stop.textContent = "Stop it";
+      stop.addEventListener("click", () => vscode.postMessage({ type: "stopHolder" }));
+      line.appendChild(go);
+      line.appendChild(stop);
+      messagesEl.appendChild(line);
+      scrollToBottom();
+    }
+    line.querySelector(".busy-text").textContent = text;
+  }
+
+  function dropBusy() {
+    document.getElementById("busy")?.remove();
   }
 
   function addDayDivider(label) {
@@ -1054,6 +1091,24 @@
       case "notice":
         if (typeof message.text === "string") {
           addNotice(message);
+        }
+        break;
+      case "busy":
+        if (typeof message.text === "string") {
+          onBusy(message.text);
+        }
+        break;
+      case "busyDone":
+        dropBusy();
+        break;
+      case "boxLock":
+        boxLocked = message.locked === true;
+        boxLockText = typeof message.text === "string" ? message.text : "";
+        updateComposer();
+        break;
+      case "tabId":
+        if (typeof message.id === "string" && message.id) {
+          vscode.setState({ ...(vscode.getState() ?? {}), tabUid: message.id });
         }
         break;
       case "saved":

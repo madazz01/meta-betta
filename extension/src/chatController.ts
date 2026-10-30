@@ -99,10 +99,35 @@ import {
   MuseHost,
   type MuseHostEvent,
 } from "./muse/museHost.js";
+import { current as lockHolder, TurnBusyError } from "./muse/turnLock.js";
+import { MAIN_TAB_UID, MessageQueue, type TabRecord, type TabSeed } from "./lib/chatTabs.js";
 
 /** One attached chat surface: the editor panel or the sidebar view. */
 export interface ChatSink {
   post(message: unknown): void;
+}
+
+/**
+ * The extension side of a tab: persistence + cross-tab actions. The
+ * controller owns its chat; the TabHost owns everything shared between tabs.
+ */
+export interface TabHost {
+  /** This tab's id (MAIN_TAB_UID for the first chat). */
+  uid: string;
+  /** Reload/fork seed: the session (and label) to resume. */
+  seed?: TabSeed;
+  /** The tab's record changed (session/label/topic): persist it + retitle. */
+  onChanged: (record: TabRecord) => void;
+  /** New pill: open a fresh tab and focus it. */
+  onNewTab: () => void;
+  /** Fork pill: open a tab on the forked session and focus it. */
+  onForkTab: (sessionId: string) => void;
+  /** Another tab's header label, for the busy line. */
+  labelOf: (uid: string) => string | undefined;
+  /** Go to it: reveal the tab running the turn. */
+  revealTab: (uid: string) => void;
+  /** Stop it: stop the tab running the turn. */
+  stopTab: (uid: string) => void;
 }
 
 export interface SavedSection {
@@ -125,7 +150,11 @@ type TranscriptEvent =
   | { type: "day"; label: string }
   | { type: "nudgeAnswered"; id: string; answer: "show" | "notnow" }
   | { type: "card"; id: string; title: string; body: string; buttons?: CardSpec["buttons"]; input?: CardSpec["input"] }
-  | { type: "cardDone"; id: string };
+  | { type: "cardDone"; id: string }
+  | { type: "busy"; text: string }
+  | { type: "busyDone" }
+  | { type: "boxLock"; locked: boolean; text?: string }
+  | { type: "tabId"; id: string };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
@@ -143,6 +172,8 @@ const SHELL_NOTICE_KEY = "metaBetta.shellNoticeShown";
 const TICK_MS = 10_000;
 /** A quick save also fires after this many turns, whatever the clock says. */
 const QUICK_SAVE_TURNS = 15;
+/** A queued message retries the lock this often while it waits. */
+const QUEUE_RETRY_MS = 1000;
 
 const SAVE_TITLES: Record<SaveSection, string> = {
   project: "Project",
@@ -209,9 +240,14 @@ export class ChatController {
   private lastGoal: GoalInfo | null = null;
   private lastEffort: EffortLevel = "normal";
   private switching = false;
+  private disposed = false;
   private readonly createHostShared = singleFlight((folder: vscode.WorkspaceFolder) =>
     this.createHostAsync(folder),
   );
+  /** Typed messages waiting for the lock, oldest first. */
+  private readonly queue = new MessageQueue();
+  private retryTimer: ReturnType<typeof setInterval> | undefined;
+  private flushing = false;
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -222,9 +258,13 @@ export class ChatController {
     private readonly onWelcomeOutline: () => void = () => undefined,
     private readonly updateStatusBar: (text: string) => void = () => undefined,
     private readonly globalState: vscode.Memento | undefined = undefined,
+    private readonly tabHost: TabHost,
   ) {
-    this.lastGoal = cleanGoalInfo(this.storage.get<unknown>(GOAL_KEY));
-    this.lastEffort = cleanEffortLevel(this.storage.get<unknown>(EFFORT_KEY));
+    this.lastGoal = cleanGoalInfo(this.storage.get<unknown>(this.tabKey(GOAL_KEY)));
+    this.lastEffort = cleanEffortLevel(this.storage.get<unknown>(this.tabKey(EFFORT_KEY)));
+    if (this.tabHost.seed?.catchUp) {
+      this.forceCatchUp = true;
+    }
     const storedToday = sumDayUsage(
       cleanDayUsage(this.globalState?.get<unknown>(DAILY_USAGE_KEY)),
       todayKey(),
@@ -246,6 +286,7 @@ export class ChatController {
     }
     sink.post({ type: "turn", state: this.running ? "started" : "done" });
     sink.post({ type: "status", text: this.lastStatus });
+    sink.post({ type: "tabId", id: this.tabHost.uid });
     sink.post({ type: "sessionLabel", label: this.sessionLabel() });
     sink.post({ type: "welcomeSkip", show: this.welcomeStep !== undefined });
     sink.post({
@@ -332,7 +373,7 @@ export class ChatController {
     const slash = parseSlashCommand(text);
     if (slash) {
       this.recordAndBroadcast({ type: "user", text, at: Date.now() });
-      this.storeSet(LAST_MESSAGE_KEY, Date.now());
+      this.storeSet(this.tabKey(LAST_MESSAGE_KEY), Date.now());
       await this.dispatchSlash(slash.name, slash.args);
       return;
     }
@@ -354,9 +395,23 @@ export class ChatController {
         this.broadcastSessionLabel();
       }
     }
-    let host: MuseHost;
+    if (this.welcomeStep && /^\s*skip(\s+this|\s+for\s+now)?\s*[.?]?\s*$/i.test(text)) {
+      this.skipWelcome();
+      return;
+    }
+    if (this.queue.full) {
+      // The box should have locked at five; a raced sixth says so plainly.
+      this.showBusy();
+      this.broadcast({
+        type: "notice",
+        kind: "info",
+        text: "Five messages are already waiting — press Send again when the box unlocks.",
+      });
+      return;
+    }
     try {
-      host = await this.ensureHost(folder);
+      // Ensured before recording, so a failed start leaves no ghost message.
+      await this.ensureHost(folder);
     } catch (error) {
       this.broadcast({
         type: "notice",
@@ -365,15 +420,21 @@ export class ChatController {
       });
       return;
     }
-    if (this.welcomeStep && /^\s*skip(\s+this|\s+for\s+now)?\s*[.?]?\s*$/i.test(text)) {
-      this.skipWelcome();
-      return;
-    }
     // Recorded only once the turn will actually run: a failed send never
     // reaches the server, and a ghost user message would skew the undo
     // anchors on resume.
     this.recordAndBroadcast({ type: "user", text, at: Date.now() });
-    this.storeSet(LAST_MESSAGE_KEY, Date.now());
+    this.storeSet(this.tabKey(LAST_MESSAGE_KEY), Date.now());
+    await this.fileWelcomeAnswer(folder, text);
+    if (lockHolder() !== undefined) {
+      this.enqueueMessage(text);
+      return;
+    }
+    await this.sendNow(folder, text);
+  }
+
+  /** File a welcome answer into the brain; runs once per message, queued or not. */
+  private async fileWelcomeAnswer(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
     if (this.welcomeStep === "hello" && !this.welcomeHeard) {
       // The hello never arrived (failed or stopped): cancel rather than
       // filing guesses. A reload tries the welcome again.
@@ -394,8 +455,130 @@ export class ChatController {
       }
       this.welcomeStep = "memory";
     }
+  }
+
+  /**
+   * Run the turn now. A lost lock race re-queues instead of failing; the
+   * message is recorded already, so only the turn is deferred.
+   */
+  private async sendNow(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
+    let host: MuseHost;
+    try {
+      host = await this.ensureHost(folder);
+    } catch (error) {
+      this.broadcast({
+        type: "notice",
+        kind: "error",
+        text: `Something went wrong: ${shortReason(error)}.`,
+      });
+      return;
+    }
     this.pendingBefore = await this.takeBeforeSnapshot(folder);
-    await host.send(await this.withBackground(folder, text), folder.uri.fsPath);
+    try {
+      await host.send(await this.withBackground(folder, text), folder.uri.fsPath);
+    } catch (error) {
+      if (error instanceof TurnBusyError) {
+        this.enqueueMessage(text);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The lock is held: the message stays visible and sends in order when the
+   * lock frees. The box locks at five until the queue drains.
+   */
+  private enqueueMessage(text: string): void {
+    if (!this.queue.push(text)) {
+      this.showBusy();
+      return;
+    }
+    this.showBusy();
+    this.ensureRetry();
+  }
+
+  private ensureRetry(): void {
+    this.retryTimer ??= setInterval(() => {
+      void this.retryQueue();
+    }, QUEUE_RETRY_MS);
+    this.retryTimer.unref?.();
+  }
+
+  private async retryQueue(): Promise<void> {
+    if (this.flushing) {
+      return;
+    }
+    if (lockHolder() !== undefined) {
+      this.showBusy();
+      return;
+    }
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const next = this.queue.shift();
+    this.flushing = true;
+    try {
+      if (next !== undefined && folder) {
+        await this.sendNow(folder, next);
+      } else if (
+        next === undefined &&
+        this.pendingSave === "full" &&
+        !this.running &&
+        !this.saveRun &&
+        folder &&
+        this.memoryOn
+      ) {
+        this.pendingSave = undefined;
+        await this.runSave(folder, false);
+      }
+    } finally {
+      this.flushing = false;
+    }
+    this.settleRetry();
+  }
+
+  /** Refresh the busy line + box lock after the queue changes. */
+  private settleRetry(): void {
+    if (this.queue.size === 0 && this.pendingSave !== "full") {
+      if (this.retryTimer) {
+        clearInterval(this.retryTimer);
+        this.retryTimer = undefined;
+      }
+      this.broadcast({ type: "busyDone" });
+      this.broadcast({ type: "boxLock", locked: false });
+      return;
+    }
+    this.showBusy();
+  }
+
+  private showBusy(): void {
+    const holder = lockHolder();
+    if (holder === undefined || this.queue.size === 0) {
+      return;
+    }
+    const name = this.tabHost.labelOf(holder);
+    const where = name === undefined ? "another chat" : `'${name}'`;
+    this.broadcast({ type: "busy", text: `Muse is working in ${where}.` });
+    this.broadcast({
+      type: "boxLock",
+      locked: this.queue.full,
+      text: `Muse is working in ${where} — it'll get to these`,
+    });
+  }
+
+  /** Go to it: reveal the tab running the turn. */
+  public goToHolder(): void {
+    const holder = lockHolder();
+    if (holder !== undefined) {
+      this.tabHost.revealTab(holder);
+    }
+  }
+
+  /** Stop it: stop the tab running the turn; ours sends next. */
+  public stopHolder(): void {
+    const holder = lockHolder();
+    if (holder !== undefined) {
+      this.tabHost.stopTab(holder);
+    }
   }
 
   /**
@@ -416,11 +599,38 @@ export class ChatController {
     if (!isStarterMe(me)) {
       return;
     }
+    if (lockHolder() !== undefined) {
+      this.retryWelcome(folder);
+      return;
+    }
     this.welcomeStep = "hello";
     this.welcomeHeard = false;
     this.broadcast({ type: "welcomeSkip", show: true });
     const host = await this.ensureHost(folder);
-    await host.send(WELCOME_PROMPT, folder.uri.fsPath);
+    try {
+      await host.send(WELCOME_PROMPT, folder.uri.fsPath);
+    } catch (error) {
+      if (error instanceof TurnBusyError) {
+        this.welcomeStep = undefined;
+        this.broadcast({ type: "welcomeSkip", show: false });
+        this.retryWelcome(folder);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /** The hello lost the lock race: try again in a bit, unless we're chatting. */
+  private retryWelcome(folder: vscode.WorkspaceFolder): void {
+    if (this.disposed || this.liveReplySeen) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (!this.disposed) {
+        void this.maybeWelcome(folder);
+      }
+    }, 5000);
+    timer.unref?.();
   }
 
   public skipWelcome(): void {
@@ -481,7 +691,7 @@ export class ChatController {
       updateCard: (id, card) => this.updateCard(id, card),
       closeCard: (id) => this.closeCard(id),
       notice: (kind, text) => this.recordAndBroadcast({ type: "notice", kind, text }),
-      newChat: () => this.newChat(),
+      newChat: async () => this.newChat(),
       saveMyDay: () => this.saveMyDay(),
       stop: () => this.stop(),
       clearView: () => this.clearView(),
@@ -587,6 +797,9 @@ export class ChatController {
     this.welcomeStep = undefined;
     this.broadcast({ type: "welcomeSkip", show: false });
     this.history = [];
+    // Queued drafts belong to the old chat; switching drops them.
+    this.queue.clear();
+    this.settleRetry();
     this.broadcast({ type: "clear" });
     this.running = true;
     this.broadcast({ type: "turn", state: "started" });
@@ -618,8 +831,8 @@ export class ChatController {
     }
     this.replaying = false;
     this.replayer = undefined;
-    this.storeSet(TRANSCRIPT_KEY, undefined);
-    this.storeSet(LAST_MESSAGE_KEY, undefined);
+    this.storeSet(this.tabKey(TRANSCRIPT_KEY), undefined);
+    this.storeSet(this.tabKey(LAST_MESSAGE_KEY), undefined);
     this.anchorHigh = 0;
     this.forceCatchUp = true;
     this.liveReplySeen = false;
@@ -690,9 +903,14 @@ export class ChatController {
     return host.sideAsk(root, question, onProgress);
   }
 
+  /**
+   * Fork snapshot-forks the Muse session, then opens it in a new focused
+   * tab. The fork is a session command, not a turn: it never takes the lock,
+   * even mid-turn.
+   */
   private async slashFork(): Promise<void> {
     const { host, root } = await this.slashHost();
-    await this.switchToSession(await host.forkSession(root));
+    this.tabHost.onForkTab(await host.forkSession(root));
   }
 
   private async slashListTasks(): Promise<TaskRow[]> {
@@ -748,7 +966,7 @@ export class ChatController {
     const { host, root } = await this.slashHost();
     await host.setEffort(root, level);
     this.lastEffort = level;
-    this.storeSet(EFFORT_KEY, level);
+    this.storeSet(this.tabKey(EFFORT_KEY), level);
     this.broadcast({ type: "effort", level });
   }
 
@@ -792,7 +1010,7 @@ export class ChatController {
   /** Clear the panel view: the chat, undos and brain all stay. */
   public clearView(): void {
     this.history = [];
-    this.storeSet(TRANSCRIPT_KEY, undefined);
+    this.storeSet(this.tabKey(TRANSCRIPT_KEY), undefined);
     this.broadcast({ type: "clear" });
     this.broadcast({ type: "turn", state: "done" });
     this.setStatus("Ready");
@@ -901,7 +1119,7 @@ export class ChatController {
       this.forceCatchUp = false;
     } else {
       const afterHours = vscode.workspace.getConfiguration("metaBetta").get<number>("catchUpAfterHours", 4);
-      if (!needsCatchUp(this.storage.get<number>(LAST_MESSAGE_KEY), Date.now(), afterHours)) {
+      if (!needsCatchUp(this.storage.get<number>(this.tabKey(LAST_MESSAGE_KEY)), Date.now(), afterHours)) {
         return text;
       }
     }
@@ -958,6 +1176,20 @@ export class ChatController {
   }
 
   private async runSave(folder: vscode.WorkspaceFolder, quick: boolean): Promise<void> {
+    if (lockHolder() !== undefined) {
+      // A save is a turn too: it waits for the lock with the rest. Quick
+      // saves just skip a round; a full save says so and retries.
+      if (!quick) {
+        this.pendingSave = "full";
+        this.broadcast({
+          type: "notice",
+          kind: "info",
+          text: "Muse is busy in another chat — I'll save when it's free.",
+        });
+        this.ensureRetry();
+      }
+      return;
+    }
     // Claimed up front: the timer and turn-done both check, and must not
     // start a second save while the host is still starting.
     this.saveRun = {
@@ -984,7 +1216,25 @@ export class ChatController {
       this.setStatus("Ready");
       return;
     }
-    await host.send(quick ? QUICK_SAVE_PROMPT : SAVE_MY_DAY_PROMPT, folder.uri.fsPath);
+    try {
+      await host.send(quick ? QUICK_SAVE_PROMPT : SAVE_MY_DAY_PROMPT, folder.uri.fsPath);
+    } catch (error) {
+      if (error instanceof TurnBusyError) {
+        this.saveRun = undefined;
+        this.setStatus("Ready");
+        if (!quick) {
+          this.pendingSave = "full";
+          this.broadcast({
+            type: "notice",
+            kind: "info",
+            text: "Muse is busy in another chat — I'll save when it's free.",
+          });
+          this.ensureRetry();
+        }
+        return;
+      }
+      throw error;
+    }
     await this.finalizeSave(folder, quick);
   }
 
@@ -1467,63 +1717,12 @@ export class ChatController {
     this.approvalResolvers.delete(id);
   }
 
-  public async newChat(): Promise<void> {
-    const answer = await vscode.window.showWarningMessage(
-      "Start a new chat? The old one stays saved by Muse.",
-      "New chat",
-      "Cancel",
-    );
-    if (answer !== "New chat") {
-      return;
-    }
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) {
-      return;
-    }
-    if (this.saveRun) {
-      // Stays set so late save events keep routing to onSaveEvent (dropped);
-      // finalizeSave clears it when the interrupted turn ends.
-      this.saveRun.cancelled = true;
-    }
-    this.pendingSave = undefined;
-    // The interrupted turn ends silently, so no after-snapshot pairs with this.
-    this.pendingBefore = undefined;
-    // A new chat drops the script (a reload tries the welcome again).
-    this.welcomeStep = undefined;
-    this.broadcast({ type: "welcomeSkip", show: false });
-    const host = await this.ensureHost(folder);
-    try {
-      await host.newSession(folder.uri.fsPath);
-    } catch (error) {
-      this.broadcast({
-        type: "notice",
-        kind: "error",
-        text: `Something went wrong starting a new chat: ${shortReason(error)}.`,
-      });
-      this.broadcast({ type: "turn", state: "done" });
-      this.broadcast({ type: "status", text: "Ready" });
-      return;
-    }
-    this.history = [];
-    this.storeSet(TRANSCRIPT_KEY, undefined);
-    this.storeSet(LAST_MESSAGE_KEY, undefined);
-    // Undo history stays: it's about files, not the conversation. Anchors
-    // restart for the new session (old ones can't match it: they're tagged
-    // with the old session id).
-    this.anchorHigh = 0;
-    this.forceCatchUp = true;
-    this.running = false;
-    this.lastStatus = "";
-    this.lastUsage = undefined;
-    this.updateStatusBar(formatStatusBar(undefined));
-    this.liveReplySeen = false;
-    this.sessionId = createSessionId();
-    this.sessionTopic = "";
-    this.persistSessionLabel();
-    this.broadcastSessionLabel();
-    this.broadcast({ type: "clear" });
-    this.broadcast({ type: "turn", state: "done" });
-    this.broadcast({ type: "status", text: "Ready" });
+  /**
+   * New opens a fresh tab and focuses it. This chat is untouched: no
+   * confirm, nothing is lost.
+   */
+  public newChat(): void {
+    this.tabHost.onNewTab();
   }
 
   public async openLink(url: string): Promise<void> {
@@ -1550,7 +1749,13 @@ export class ChatController {
   }
 
   public async dispose(): Promise<void> {
+    this.disposed = true;
     clearInterval(this.tickTimer);
+    if (this.retryTimer) {
+      clearInterval(this.retryTimer);
+      this.retryTimer = undefined;
+    }
+    this.queue.clear();
     const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
     delete live[this.sessionId];
     try {
@@ -1596,7 +1801,7 @@ export class ChatController {
         return;
       }
       const host = await this.ensureHost(folder);
-      const savedId = this.storage.get<string>(SESSION_ID_KEY);
+      const savedId = this.loadSessionId();
       if (!savedId?.trim()) {
         this.log("Resume: none (no saved session)");
       } else {
@@ -1612,7 +1817,7 @@ export class ChatController {
             shown = 0;
           }
           if (shown === 0) {
-            const stored = cleanTranscript(this.storage.get<unknown>(TRANSCRIPT_KEY));
+            const stored = cleanTranscript(this.storage.get<unknown>(this.tabKey(TRANSCRIPT_KEY)));
             this.log(`Resume: stored transcript (${stored.length} entries)`);
             const replayed = new Set<string>();
             stored.forEach((entry, index) => {
@@ -1729,6 +1934,21 @@ export class ChatController {
       return;
     }
     this.labelSettled = true;
+    const seed = this.tabHost.seed;
+    if (seed?.labelId) {
+      // A revived tab keeps its own label; whoever loads first wins it.
+      this.sessionId = seed.labelId;
+      this.sessionTopic = seed.topic ?? "";
+      const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
+      if (isLabelTaken(seed.labelId, live, Date.now())) {
+        this.diverged = true;
+        this.sessionId = createSessionId();
+      }
+      this.broadcastSessionLabel();
+      this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
+      this.heartbeat();
+      return;
+    }
     const stored = cleanSessionLabel(this.storage.get<unknown>(SESSION_LABEL_KEY));
     if (stored) {
       const live = cleanLiveLabels(this.storage.get<unknown>(LIVE_LABELS_KEY));
@@ -1740,6 +1960,7 @@ export class ChatController {
         this.sessionTopic = stored.topic;
       }
       this.broadcastSessionLabel();
+      this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
     }
     this.heartbeat();
   }
@@ -1749,6 +1970,7 @@ export class ChatController {
     if (!this.diverged) {
       this.storeSet(SESSION_LABEL_KEY, { id: this.sessionId, topic: this.sessionTopic });
     }
+    this.tabChanged({ labelId: this.sessionId, topic: this.sessionTopic });
     this.heartbeat();
   }
 
@@ -1777,16 +1999,23 @@ export class ChatController {
       askApproval: (card) => this.askApproval(card),
       log: (message) => this.log(message),
       sandboxWorkaround: workaround,
+      turnOwner: this.tabHost.uid,
       sessionStore: {
-        loadId: () => this.storage.get<string>(SESSION_ID_KEY),
+        loadId: () => this.loadSessionId(),
         saveId: (id) => {
           this.museSessionId = id;
-          this.storeSet(SESSION_ID_KEY, id);
+          this.tabChanged({ session: id });
+          if (this.tabHost.uid === MAIN_TAB_UID) {
+            this.storeSet(SESSION_ID_KEY, id);
+          }
         },
         clear: () => {
-          this.storeSet(SESSION_ID_KEY, undefined);
-          this.storeSet(TRANSCRIPT_KEY, undefined);
-          this.storeSet(LAST_MESSAGE_KEY, undefined);
+          this.tabChanged({ session: undefined });
+          if (this.tabHost.uid === MAIN_TAB_UID) {
+            this.storeSet(SESSION_ID_KEY, undefined);
+          }
+          this.storeSet(this.tabKey(TRANSCRIPT_KEY), undefined);
+          this.storeSet(this.tabKey(LAST_MESSAGE_KEY), undefined);
           // Undo history stays: the snapshots are still valid.
           this.anchorHigh = 0;
         },
@@ -1798,8 +2027,39 @@ export class ChatController {
     void this.storage.update(key, value).then(undefined, () => undefined);
   }
 
+  /** This tab's id. */
+  public get tabUid(): string {
+    return this.tabHost.uid;
+  }
+
+  /** The status bar text for the active-tab handoff. */
+  public statusBarText(): string {
+    return formatStatusBar(this.lastUsage);
+  }
+
+  /**
+   * Per-tab storage key. The first tab keeps the pre-tabs keys (no
+   * migration); other tabs suffix their own.
+   */
+  private tabKey(base: string): string {
+    return this.tabHost.uid === MAIN_TAB_UID ? base : `${base}.${this.tabHost.uid}`;
+  }
+
+  /** Report a session/label/topic change for the tab record + title. */
+  private tabChanged(record: TabRecord): void {
+    this.tabHost.onChanged(record);
+  }
+
   private persistTranscript(): void {
-    this.storeSet(TRANSCRIPT_KEY, buildTranscript(this.history));
+    this.storeSet(this.tabKey(TRANSCRIPT_KEY), buildTranscript(this.history));
+  }
+
+  /** The session to resume: the tab's seed, else (first tab) the pre-tabs key. */
+  private loadSessionId(): string | undefined {
+    return (
+      this.tabHost.seed?.session ??
+      (this.tabHost.uid === MAIN_TAB_UID ? this.storage.get<string>(SESSION_ID_KEY) : undefined)
+    );
   }
 
   private persistUndos(): void {
@@ -1814,13 +2074,13 @@ export class ChatController {
     }
     if (event.type === "goal") {
       this.lastGoal = event.goal;
-      this.storeSet(GOAL_KEY, event.goal);
+      this.storeSet(this.tabKey(GOAL_KEY), event.goal);
       this.broadcast({ type: "goal", goal: event.goal });
       return;
     }
     if (event.type === "effort") {
       this.lastEffort = event.level;
-      this.storeSet(EFFORT_KEY, event.level);
+      this.storeSet(this.tabKey(EFFORT_KEY), event.level);
       this.broadcast({ type: "effort", level: event.level });
       return;
     }
@@ -2066,7 +2326,15 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     return;
   }
   if (message.type === "newChat") {
-    void controller.newChat();
+    controller.newChat();
+    return;
+  }
+  if (message.type === "goToHolder") {
+    controller.goToHolder();
+    return;
+  }
+  if (message.type === "stopHolder") {
+    controller.stopHolder();
     return;
   }
   if (message.type === "renameSession") {

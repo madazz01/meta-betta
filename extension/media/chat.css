@@ -541,6 +541,14 @@ body {
   color: var(--vscode-errorForeground);
 }
 
+.busy-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
 .catching-up {
   color: var(--vscode-descriptionForeground);
   font-style: italic;

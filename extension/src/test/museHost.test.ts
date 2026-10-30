@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { FoldedItem, TurnOutcome } from "@muse-code/sdk";
 import type { ApprovalRequestParams, Notification } from "@muse-code/sdk/dist/src/msp.js";
+import { acquire as acquireTurn, current as lockHolder, release as releaseTurn, TurnBusyError } from "../muse/turnLock.js";
 import {
   chainNotifications,
   MuseHost,
@@ -175,7 +176,7 @@ function fakeCommands(options: {
   commands?: Record<string, Record<string, unknown>>;
   sessions?: Record<string, HostSession>;
   failCommands?: string[];
-  hostOptions?: { sandboxWorkaround?: boolean; platform?: string };
+  hostOptions?: { sandboxWorkaround?: boolean; platform?: string; turnOwner?: string };
 }): ScriptedFake {
   const events: MuseHostEvent[] = [];
   const requests: ScriptedFake["requests"] = [];
@@ -316,6 +317,29 @@ describe("serveArgs", () => {
     assert.deepEqual(serveArgs("win32", true, false), ["serve", "--trust-workspace"]);
     assert.deepEqual(serveArgs("darwin", true, true), ["serve", "--trust-workspace"]);
     assert.deepEqual(serveArgs("linux", false, true), ["serve"]);
+  });
+});
+
+describe("turn lock", () => {
+  it("refuses a send while another tab holds the lock, emitting nothing", async () => {
+    const fake = fakeCommands({ hostOptions: { turnOwner: "tab-a" } });
+    assert.equal(acquireTurn("tab-b"), true);
+    try {
+      await assert.rejects(fake.host.send("hi", process.cwd()), TurnBusyError);
+    } finally {
+      releaseTurn("tab-b");
+    }
+    assert.deepEqual(fake.events, []);
+    await fake.host.dispose();
+  });
+
+  it("releases the lock when the turn ends", async () => {
+    const fake = fakeCommands({ hostOptions: { turnOwner: "tab-a" } });
+    await fake.host.send("hi", process.cwd());
+    assert.equal(lockHolder(), undefined);
+    assert.equal(acquireTurn("tab-b"), true);
+    releaseTurn("tab-b");
+    await fake.host.dispose();
   });
 });
 
