@@ -11,16 +11,6 @@
   <main id="chat">
     <header id="topbar">
       <button id="session-label" class="label-btn" type="button" title="Rename this chat">…</button>
-      <div class="header-actions">
-        <button id="save-day" class="header-btn" type="button" title="Save my day">Save</button>
-        <button id="undo-last" class="header-btn" type="button" title="Undo the last change" disabled>↩ Undo</button>
-        <button id="new-chat" class="header-btn" type="button" title="New chat in a new tab">New</button>
-        <span class="header-divider" aria-hidden="true"></span>
-        <button id="header-goal" class="header-btn little" type="button" title="Set a goal">Goal</button>
-        <button id="header-side" class="header-btn little" type="button" title="Side question">Side</button>
-        <button id="header-fork" class="header-btn little" type="button" title="Fork this chat into a new tab">Fork</button>
-        <button id="header-usage" class="header-btn little" type="button" title="Usage so far">Usage</button>
-      </div>
       <button id="skip-welcome" class="btn small" type="button" hidden>Skip</button>
     </header>
     <div id="goal" hidden></div>
@@ -33,11 +23,20 @@
     <div id="slash-menu" hidden></div>
     <div id="composer-wrap">
       <form id="composer">
-        <button id="plus" type="button" title="Commands (same as /)">+</button>
         <textarea id="input" rows="2" placeholder="Type a message…" aria-label="Type a message"></textarea>
-        <button id="effort" type="button" title="Thinking effort: Normal — click to change">⚡ Normal</button>
-        <button id="send" type="submit">Send</button>
+        <div id="strip" role="toolbar" aria-label="Chat actions">
+          <div class="strip-fixed">
+            <button id="save-day" class="fixed-btn" type="button" title="Save my day">Save</button>
+            <button id="undo-last" class="fixed-btn" type="button" title="Undo the last change" disabled>↩ Undo</button>
+            <button id="new-chat" class="fixed-btn" type="button" title="New chat in a new tab">New</button>
+          </div>
+          <span class="strip-divider" aria-hidden="true"></span>
+          <div id="pills" aria-label="Your shortcuts"></div>
+          <button id="effort" class="pill" type="button" title="How hard Muse thinks. Deep is slower and uses more credits.">Effort: Normal ▾</button>
+          <button id="send" type="submit">Send</button>
+        </div>
       </form>
+      <div id="popup" hidden></div>
     </div>
     <p id="status" aria-live="polite"></p>
   </main>

@@ -14,16 +14,14 @@
   const undoLastButton = document.getElementById("undo-last");
   const skipWelcomeButton = document.getElementById("skip-welcome");
   const sessionLabelButton = document.getElementById("session-label");
-  const headerGoalButton = document.getElementById("header-goal");
-  const headerSideButton = document.getElementById("header-side");
-  const headerForkButton = document.getElementById("header-fork");
-  const headerUsageButton = document.getElementById("header-usage");
   const noFolderEl = document.getElementById("no-folder");
   const openFolderButton = document.getElementById("open-folder");
   const goalEl = document.getElementById("goal");
   const slashMenuEl = document.getElementById("slash-menu");
   const effortButton = document.getElementById("effort");
-  const plusButton = document.getElementById("plus");
+  const pillsEl = document.getElementById("pills");
+  const popupEl = document.getElementById("popup");
+  const composerWrapEl = document.getElementById("composer-wrap");
 
   // A reply shows its time only after a long gap in the conversation.
   const LONG_GAP_MS = 30 * 60 * 1000;
@@ -48,6 +46,11 @@
   let slashOpen = false;
   let slashIndex = 0;
   let slashQuery = "";
+  let shortcutList = [];
+  let shortcutSlots = [];
+  let effortLevels = [];
+  let effortCurrent = "normal";
+  let popupFor = null;
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -439,10 +442,145 @@
   }
 
   function updateEffort(level) {
-    const labels = { quick: "Quick", normal: "Normal", deep: "Deep" };
-    const label = labels[level] || "Normal";
-    effortButton.textContent = `⚡ ${label}`;
-    effortButton.title = `Thinking effort: ${label} — click to change`;
+    effortCurrent = level;
+    effortButton.textContent = `Effort: ${effortLabel(level)} ▾`;
+  }
+
+  function effortLabel(level) {
+    const found = effortLevels.find((row) => row.id === level);
+    return found ? found.label : "Normal";
+  }
+
+  function shortcutDef(id) {
+    return shortcutList.find((def) => def.id === id);
+  }
+
+  function renderPills() {
+    pillsEl.replaceChildren();
+    shortcutSlots.forEach((id, index) => {
+      const def = shortcutDef(id);
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = "pill";
+      pill.textContent = def ? def.label : id;
+      pill.title = def ? `${def.label} — ${def.description} (right-click to swap)` : id;
+      let pressOpened = false;
+      pill.addEventListener("click", () => {
+        // A long-press already opened the picker; don't run the shortcut too.
+        if (pressOpened) {
+          pressOpened = false;
+          return;
+        }
+        closePopup();
+        vscode.postMessage({ type: "shortcut", id });
+      });
+      pill.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        openShortcutPicker(index, pill);
+      });
+      let pressTimer = null;
+      pill.addEventListener(
+        "touchstart",
+        () => {
+          pressTimer = setTimeout(() => {
+            pressOpened = true;
+            openShortcutPicker(index, pill);
+          }, 500);
+        },
+        { passive: true },
+      );
+      pill.addEventListener("touchend", () => clearTimeout(pressTimer));
+      pill.addEventListener("touchmove", () => clearTimeout(pressTimer));
+      pill.addEventListener("keydown", (event) => {
+        if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          event.preventDefault();
+          openShortcutPicker(index, pill);
+        }
+      });
+      pillsEl.appendChild(pill);
+    });
+  }
+
+  function closePopup() {
+    popupEl.hidden = true;
+    popupEl.replaceChildren();
+    popupFor = null;
+  }
+
+  function popupRow(label, desc, ticked, onPick) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "popup-row";
+    const tick = document.createElement("span");
+    tick.className = "popup-tick";
+    tick.textContent = ticked ? "✓" : "";
+    row.appendChild(tick);
+    const name = document.createElement("span");
+    name.className = "popup-name";
+    name.textContent = label;
+    row.appendChild(name);
+    if (desc) {
+      const sub = document.createElement("span");
+      sub.className = "popup-desc";
+      sub.textContent = desc;
+      row.appendChild(sub);
+    }
+    row.addEventListener("click", () => {
+      closePopup();
+      onPick();
+    });
+    return row;
+  }
+
+  function positionPopup(anchor) {
+    popupEl.style.left = "";
+    popupEl.style.right = "";
+    if (anchor.offsetLeft + 300 > composerWrapEl.clientWidth) {
+      popupEl.style.right = "0";
+    } else {
+      popupEl.style.left = `${anchor.offsetLeft}px`;
+    }
+  }
+
+  function openShortcutPicker(index, anchor) {
+    popupFor = { kind: "shortcut", index };
+    popupEl.replaceChildren();
+    const current = shortcutSlots[index];
+    shortcutList.forEach((def) => {
+      popupEl.appendChild(
+        popupRow(def.label, def.description, def.id === current, () => {
+          vscode.postMessage({ type: "shortcutPick", index, id: def.id });
+        }),
+      );
+    });
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "popup-row popup-reset";
+    reset.textContent = "Reset all to defaults";
+    reset.addEventListener("click", () => {
+      closePopup();
+      vscode.postMessage({ type: "shortcutReset" });
+    });
+    popupEl.appendChild(reset);
+    popupEl.hidden = false;
+    positionPopup(anchor);
+  }
+
+  function openEffortMenu() {
+    if (effortLevels.length === 0) {
+      return;
+    }
+    popupFor = { kind: "effort" };
+    popupEl.replaceChildren();
+    effortLevels.forEach((row) => {
+      popupEl.appendChild(
+        popupRow(row.label, "", row.id === effortCurrent, () => {
+          vscode.postMessage({ type: "effortSet", level: row.id });
+        }),
+      );
+    });
+    popupEl.hidden = false;
+    positionPopup(effortButton);
   }
 
   function closeSlashMenu() {
@@ -905,22 +1043,6 @@
     vscode.postMessage({ type: "undoLast" });
   });
 
-  headerGoalButton.addEventListener("click", () => {
-    vscode.postMessage({ type: "goalAsk" });
-  });
-
-  headerSideButton.addEventListener("click", () => {
-    vscode.postMessage({ type: "sideBox" });
-  });
-
-  headerForkButton.addEventListener("click", () => {
-    vscode.postMessage({ type: "forkNow" });
-  });
-
-  headerUsageButton.addEventListener("click", () => {
-    vscode.postMessage({ type: "usageNow" });
-  });
-
   skipWelcomeButton.addEventListener("click", () => {
     vscode.postMessage({ type: "skipWelcome" });
   });
@@ -933,14 +1055,29 @@
     vscode.postMessage({ type: "openFolder" });
   });
 
-  plusButton.addEventListener("click", () => {
-    input.value = "/";
-    input.focus();
-    updateSlashMenu();
+  effortButton.addEventListener("click", () => {
+    if (popupFor && popupFor.kind === "effort") {
+      closePopup();
+    } else {
+      openEffortMenu();
+    }
   });
 
-  effortButton.addEventListener("click", () => {
-    vscode.postMessage({ type: "effortCycle" });
+  // A popup closes on Escape or a click anywhere outside it.
+  document.addEventListener("click", (event) => {
+    if (popupEl.hidden || popupEl.contains(event.target)) {
+      return;
+    }
+    if (event.target === effortButton || pillsEl.contains(event.target)) {
+      return;
+    }
+    closePopup();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !popupEl.hidden) {
+      closePopup();
+    }
   });
 
   form.addEventListener("submit", (event) => {
@@ -1052,8 +1189,34 @@
         renderGoal(message.goal);
         break;
       case "effort":
+        if (Array.isArray(message.levels)) {
+          effortLevels = message.levels.filter(
+            (row) => row && typeof row.id === "string" && typeof row.label === "string",
+          );
+        }
         if (typeof message.level === "string") {
           updateEffort(message.level);
+        }
+        break;
+      case "shortcuts":
+        if (Array.isArray(message.shortcuts)) {
+          shortcutList = message.shortcuts.filter(
+            (def) =>
+              def &&
+              typeof def.id === "string" &&
+              typeof def.label === "string" &&
+              typeof def.description === "string",
+          );
+        }
+        if (Array.isArray(message.slots)) {
+          shortcutSlots = message.slots.filter((id) => typeof id === "string");
+        }
+        renderPills();
+        break;
+      case "shortcutSlots":
+        if (Array.isArray(message.slots)) {
+          shortcutSlots = message.slots.filter((id) => typeof id === "string");
+          renderPills();
         }
         break;
       case "slashCommands":

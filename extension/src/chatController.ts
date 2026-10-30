@@ -7,6 +7,7 @@ import {
   cleanEffortLevel,
   cleanGoalInfo,
   commandErrorText,
+  EFFORT_LEVELS,
   findSlashCommand,
   parsePluginSpec,
   parseSlashCommand,
@@ -24,6 +25,14 @@ import {
   type SlashContext,
   type TaskRow,
 } from "./commands/slash.js";
+import {
+  cleanShortcutSlots,
+  DEFAULT_SHORTCUT_SLOTS,
+  effortMenu,
+  shortcutDefs,
+  shortcutDispatch,
+  swapShortcutSlot,
+} from "./commands/shortcuts.js";
 import { parseCardButton, parseCardInput, parseNudgeAnswer, parseSendMessage } from "./lib/chat.js";
 import { parseFileLink } from "./lib/links.js";
 import {
@@ -183,6 +192,8 @@ const GOAL_KEY = "metaBetta.goal";
 const EFFORT_KEY = "metaBetta.effort";
 const DAILY_USAGE_KEY = "metaBetta.dailyUsage";
 const SHELL_NOTICE_KEY = "metaBetta.shellNoticeShown";
+/** The user's shortcut pill choices (globalState: every project). */
+const SHORTCUT_SLOTS_KEY = "metaBetta.shortcutSlots";
 /** Heartbeat + quick-save check, every 10 seconds. */
 const TICK_MS = 10_000;
 /** A quick save also fires after this many turns, whatever the clock says. */
@@ -309,7 +320,8 @@ export class ChatController {
       commands: SLASH_COMMANDS.map((def) => ({ name: def.name, description: def.description })),
     });
     sink.post({ type: "goal", goal: this.lastGoal });
-    sink.post({ type: "effort", level: this.lastEffort });
+    sink.post({ type: "effort", level: this.lastEffort, levels: effortMenu(this.lastEffort) });
+    sink.post({ type: "shortcuts", shortcuts: shortcutDefs(), slots: this.shortcutSlots() });
     void this.updateHeaderUndo();
     if (!vscode.workspace.workspaceFolders?.[0]) {
       sink.post({ type: "noFolder" });
@@ -1043,12 +1055,47 @@ export class ChatController {
     }
   }
 
-  /** The ⚡ chip: quick → normal → deep, round and round. */
-  public async cycleEffort(): Promise<void> {
-    const order: EffortLevel[] = ["quick", "normal", "deep"];
-    const next = order[(order.indexOf(this.lastEffort) + 1) % order.length] ?? "normal";
+  /** A shortcut pill (left-click): Goal asks, the rest run their / command. */
+  public runShortcut(id: string): void {
+    const target = shortcutDispatch(id);
+    if (target === "askGoal") {
+      void this.askGoal();
+    } else if (target === "slash") {
+      void this.dispatchSlash(id, "");
+    }
+    // Unknown pills are quietly ignored (a stale panel after an update).
+  }
+
+  /** A shortcut pill (right-click pick): swap it in and save the slots. */
+  public pickShortcut(index: number, id: string): void {
+    const slots = swapShortcutSlot(this.shortcutSlots(), index, id);
+    this.saveShortcutSlots(slots);
+    this.broadcast({ type: "shortcutSlots", slots });
+  }
+
+  /** Back to Goal · Side · Fork · Usage on every pill. */
+  public resetShortcuts(): void {
+    const slots = [...DEFAULT_SHORTCUT_SLOTS];
+    this.saveShortcutSlots(slots);
+    this.broadcast({ type: "shortcutSlots", slots });
+  }
+
+  /** This user's pill choices, shared by every project. */
+  private shortcutSlots(): string[] {
+    return cleanShortcutSlots(this.globalState?.get<unknown>(SHORTCUT_SLOTS_KEY));
+  }
+
+  private saveShortcutSlots(slots: string[]): void {
+    void this.globalState?.update(SHORTCUT_SLOTS_KEY, slots).then(undefined, () => undefined);
+  }
+
+  /** The Effort button menu: set the picked level, same call as /effort. */
+  public async setEffortLevel(level: string): Promise<void> {
+    if (!(EFFORT_LEVELS as string[]).includes(level)) {
+      return;
+    }
     try {
-      await this.slashContext().setEffort(next);
+      await this.slashContext().setEffort(level as EffortLevel);
     } catch (error) {
       this.recordAndBroadcast({
         type: "notice",
@@ -2435,24 +2482,25 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     }
     return;
   }
-  if (message.type === "goalAsk") {
-    void controller.askGoal();
+  if (message.type === "shortcut" && typeof message.id === "string") {
+    controller.runShortcut(message.id);
     return;
   }
-  if (message.type === "sideBox") {
-    void controller.dispatchSlash("side", "");
+  if (
+    message.type === "shortcutPick" &&
+    typeof message.index === "number" &&
+    Number.isInteger(message.index) &&
+    typeof message.id === "string"
+  ) {
+    controller.pickShortcut(message.index, message.id);
     return;
   }
-  if (message.type === "forkNow") {
-    void controller.dispatchSlash("fork", "");
+  if (message.type === "shortcutReset") {
+    controller.resetShortcuts();
     return;
   }
-  if (message.type === "usageNow") {
-    void controller.dispatchSlash("usage", "");
-    return;
-  }
-  if (message.type === "effortCycle") {
-    void controller.cycleEffort();
+  if (message.type === "effortSet" && typeof message.level === "string") {
+    void controller.setEffortLevel(message.level);
     return;
   }
   if (
