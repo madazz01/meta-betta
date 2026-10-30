@@ -225,6 +225,16 @@ describe("session labels", () => {
     assert.equal(topicFromFirstMessage("x".repeat(100)).length, 40);
   });
 
+  it("cuts long labels at a word, with an ellipsis", () => {
+    assert.equal(
+      topicFromFirstMessage("Commit the uncommitted sidebar work first as 08f"),
+      "Commit the uncommitted sidebar work…",
+    );
+    assert.equal(topicFromFirstMessage("x".repeat(100)), `${"x".repeat(39)}…`);
+    assert.equal(topicFromFirstMessage("a".repeat(40)), "a".repeat(40));
+    assert.equal(continuedTopic(`continue working on ${"y".repeat(50)}`), `${"y".repeat(39)}…`);
+  });
+
   it("skips greeting-only messages, waiting for the first real one", () => {
     for (const greeting of ["hi", "Hi!", "hey", "hello", "g'day", "good morning", "morning", "yo"]) {
       assert.equal(topicFromFirstMessage(greeting), "");

@@ -163,19 +163,73 @@ const DYNAMIC_TOKEN = /[$%~`*?[]/;
 /** Words that write, matched case-insensitively against the full command. */
 const WRITE_WORDS = ["out-file", "set-content", "add-content", "tee-object", "--output"];
 
+/** `2>`, `>`, `*>` waiting for a `$null` (the spaced form: `2> $null`). */
+const THROWAWAY_PAIRS = new Set(["2>", ">", "*>"]);
+
+/** `2>$null` and friends, spaced or not, any case: output thrown away. */
+const THROWAWAY_NULL = /2>\s*\$null\b|\*>\s*\$null\b|>\s*\$null\b|2>&1|\|\s*out-null\b/gi;
+/** `2>/dev/null`, exactly: stderr thrown away on Mac and Linux. */
+const THROWAWAY_DEV_NULL = /2>\/dev\/null/g;
+
+/**
+ * The command without throwaway redirects (`2>$null`, `>$null`, `*>$null`,
+ * `2>&1`, `| Out-Null`, `2>/dev/null`, spaced or not). `$null` matches in
+ * any case; anything else with `>` or `$` is left for the checks to catch.
+ */
+export function stripThrowawayCommand(command: string): string {
+  return command.replace(THROWAWAY_NULL, "").replace(THROWAWAY_DEV_NULL, "");
+}
+
+/** One argv token that throws output away (`$null` in any case). */
+function isThrowawayToken(token: string): boolean {
+  if (token === "2>/dev/null") {
+    return true;
+  }
+  const lower = token.toLowerCase();
+  return lower === "2>$null" || lower === ">$null" || lower === "*>$null" || lower === "2>&1";
+}
+
+/** argv without throwaway redirects; lone `$null` and real writes stay. */
+export function stripThrowawayArgv(argv: string[]): string[] {
+  const clean: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index] ?? "";
+    if (isThrowawayToken(token)) {
+      continue;
+    }
+    const next = argv[index + 1] ?? "";
+    if (
+      (token === "|" && next.toLowerCase() === "out-null") ||
+      (THROWAWAY_PAIRS.has(token) && next.toLowerCase() === "$null")
+    ) {
+      index += 1;
+      continue;
+    }
+    clean.push(token);
+  }
+  return clean;
+}
+
+/** A bare `Out-Null` stage: a sink that discards its input, worth no row. */
+export function isSinkStage(argv: string[]): boolean {
+  return argv.length === 1 && commandName(argv[0] ?? "") === "out-null";
+}
+
 /**
  * True when the full command text may write: a `>` anywhere (even quoted —
  * conservative, since Muse strips redirection from stage argv) or an output
- * word. When true, nothing in the command auto-allows.
+ * word. Throwaway redirects (`2>$null`, `| Out-Null`…) don't count. When
+ * true, nothing in the command auto-allows.
  */
 export function commandHasWrite(command: string | undefined): boolean {
   if (!command) {
     return false;
   }
-  if (command.includes(">")) {
+  const clean = stripThrowawayCommand(command);
+  if (clean.includes(">")) {
     return true;
   }
-  const lower = command.toLowerCase();
+  const lower = clean.toLowerCase();
   return WRITE_WORDS.some((word) => lower.includes(word));
 }
 
@@ -200,26 +254,27 @@ const FILE_READERS = new Set([
  * stage. File readers additionally keep every path inside the workspace.
  */
 export function isReadOnlyStage(argv: string[], workspaceRoot: string): boolean {
-  if (argv.length === 0) {
+  const clean = stripThrowawayArgv(argv);
+  if (clean.length === 0) {
     return false;
   }
-  for (const token of argv.slice(1)) {
+  for (const token of clean.slice(1)) {
     if (DYNAMIC_TOKEN.test(token)) {
       return false;
     }
   }
-  for (const token of argv) {
+  for (const token of clean) {
     if (REDIRECT_TOKENS.has(token.toLowerCase())) {
       return false;
     }
   }
-  const name = commandName(argv[0] ?? "");
+  const name = commandName(clean[0] ?? "");
   const pair = READONLY_PAIRS[name];
-  const listed = pair ? pair.includes((argv[1] ?? "").toLowerCase()) : READONLY_SINGLE.has(name);
+  const listed = pair ? pair.includes((clean[1] ?? "").toLowerCase()) : READONLY_SINGLE.has(name);
   if (!listed || !FILE_READERS.has(name)) {
     return listed;
   }
-  return argv
+  return clean
     .slice(1)
     .every((token) => token.startsWith("-") || insideDir(workspaceRoot, workspaceRoot, token));
 }
@@ -572,7 +627,9 @@ function gitAsksStage(argv: string[], workspaceRoot: string): boolean {
  * for installs and downloads, git escapes, outside paths (a leading `/` is
  * a path, so `/` is the drive root), dynamic tokens, deletes/moves/renames/
  * copies without an explicit path or past the first stage, and anything it
- * can't parse. Pure: the host decides, the webview only shows the row.
+ * can't parse. Throwaway redirects (`2>$null`, `| Out-Null`…) are stripped
+ * before every check, and a bare `Out-Null` stage passes as a sink. Pure:
+ * the host decides, the webview only shows the row.
  */
 export function autoAllowStage(
   argv: string[],
@@ -583,36 +640,40 @@ export function autoAllowStage(
   if (argv.length === 0 || workspaceRoot === "") {
     return false;
   }
-  for (const token of argv.slice(1)) {
+  const clean = stripThrowawayArgv(argv);
+  if (isSinkStage(clean)) {
+    return true;
+  }
+  for (const token of clean.slice(1)) {
     if (DYNAMIC_TOKEN.test(token)) {
       return false;
     }
   }
-  const name = commandName(argv[0] ?? "");
+  const name = commandName(clean[0] ?? "");
   if (name === "" || AUTO_ASK_COMMANDS.has(name)) {
     return false;
   }
   if (name === "npm") {
-    const sub = (argv[1] ?? "").toLowerCase();
+    const sub = (clean[1] ?? "").toLowerCase();
     if (!NPM_AUTO_SUBCOMMANDS.has(sub)) {
       return false;
     }
-    if ((sub === "run" || sub === "run-script") && argv[2] === undefined) {
+    if ((sub === "run" || sub === "run-script") && clean[2] === undefined) {
       return false;
     }
   }
   if (name === "node") {
-    const script = firstPath(argv);
+    const script = firstPath(clean);
     if (script === undefined || !insideDir(workspaceRoot, workspaceRoot, script)) {
       return false;
     }
-    for (const token of argv.slice(1)) {
+    for (const token of clean.slice(1)) {
       if (NODE_EVAL_FLAGS.has(token)) {
         return false;
       }
     }
   }
-  if (name === "git" && gitAsksStage(argv, workspaceRoot)) {
+  if (name === "git" && gitAsksStage(clean, workspaceRoot)) {
     return false;
   }
   const runnable =
@@ -624,12 +685,12 @@ export function autoAllowStage(
     return false;
   }
   if (fullCommand !== undefined && commandHasWrite(fullCommand)) {
-    const target = redirectTarget(argv);
+    const target = redirectTarget(clean);
     if (!target || !insideDir(workspaceRoot, workspaceRoot, target)) {
       return false;
     }
   }
-  const paths = pathArgs(argv, () => false);
+  const paths = pathArgs(clean, () => false);
   if (PATH_VERBS.has(STAGE_VERBS[name] ?? "") && (paths.length === 0 || !isFirstStage)) {
     return false;
   }

@@ -603,7 +603,9 @@
 
   function updateEffort(level) {
     effortCurrent = level;
-    effortButton.textContent = `Effort: ${effortLabel(level)} ▾`;
+    const label = effortLabel(level);
+    effortButton.textContent = `${label} ▾`;
+    effortButton.title = `Effort: ${label}. How hard Muse thinks. Deep is slower and uses more credits.`;
   }
 
   function effortLabel(level) {
@@ -613,7 +615,9 @@
 
   function updateApprovals(mode) {
     approvalsCurrent = mode;
-    approvalsButton.textContent = `Approvals: ${approvalsLabel(mode)} ▾`;
+    const label = approvalsLabel(mode);
+    approvalsButton.textContent = `${label} ▾`;
+    approvalsButton.title = `Approvals: ${label}. Ask: you approve each step. Auto: safe steps in this folder go through. All: run everything without asking.`;
     approvalsButton.classList.toggle("danger", mode === "all");
   }
 

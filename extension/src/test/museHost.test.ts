@@ -848,6 +848,52 @@ describe("approval auto mode", () => {
     assert.ok(!toolRowTexts(fake.events).some((text) => text.startsWith("✓ auto-allowed")));
     await fake.host.dispose();
   });
+
+  it("rides throwaway redirects quietly, without a picker", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" }, { approvalMode: "auto" });
+    await fake.host.prepare(process.cwd());
+    assert.deepEqual(
+      await fake.decide(
+        shellRequest(0, {
+          approvalId: "auto-null",
+          command: "Get-ChildItem brain 2>$null",
+          stages: [["Get-ChildItem", "brain"]],
+        }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.deepEqual(
+      await fake.decide(
+        shellRequest(1, {
+          approvalId: "auto-null",
+          command: "Get-ChildItem brain | Out-Null",
+          stages: [["Get-ChildItem", "brain"], ["Out-Null"]],
+        }),
+      ),
+      { choiceId: "allow_once" },
+    );
+    assert.equal(fake.pickers.length, 0);
+    await fake.host.send("hi", process.cwd());
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: Get-ChildItem"));
+    assert.ok(!toolRowTexts(fake.events).some((text) => text.includes("Out-Null")));
+    await fake.host.dispose();
+  });
+
+  it("passes sink stages quietly in Ask mode too", async () => {
+    const fake = fakeApprovalHost({ choiceId: "allow_once" });
+    await fake.host.prepare(process.cwd());
+    const options = {
+      approvalId: "ask-null",
+      command: "Get-ChildItem brain | Out-Null",
+      stages: [["Get-ChildItem", "brain"], ["Out-Null"]],
+    };
+    assert.deepEqual(await fake.decide(shellRequest(0, options)), { choiceId: "allow_once" });
+    assert.deepEqual(await fake.decide(shellRequest(1, options)), { choiceId: "allow_once" });
+    assert.equal(fake.pickers.length, 0);
+    await fake.host.send("hi", process.cwd());
+    assert.ok(toolRowTexts(fake.events).includes("✓ Looked at: Get-ChildItem"));
+    await fake.host.dispose();
+  });
 });
 
 describe("approval allow-all", () => {

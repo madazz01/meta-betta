@@ -18,6 +18,7 @@ import {
   findStageChoice,
   isReadOnlyStage,
   isRejectChoice,
+  isSinkStage,
   lookedAtRow,
   pickerTitle,
   rejectedRow,
@@ -25,6 +26,8 @@ import {
   safestChoiceId,
   stageGroup,
   stageLabel,
+  stripThrowawayArgv,
+  stripThrowawayCommand,
 } from "../lib/approvals.js";
 
 describe("approvalCard", () => {
@@ -154,6 +157,50 @@ describe("commandHasWrite", () => {
     assert.equal(commandHasWrite(undefined), false);
     assert.equal(commandHasWrite(""), false);
   });
+
+  it("ignores redirects thrown away, but no other >", () => {
+    assert.equal(commandHasWrite("Get-ChildItem brain 2>$null"), false);
+    assert.equal(commandHasWrite("Get-ChildItem brain >$null"), false);
+    assert.equal(commandHasWrite("Get-ChildItem brain *>$null"), false);
+    assert.equal(commandHasWrite("node build.js 2>&1"), false);
+    assert.equal(commandHasWrite("Get-ChildItem brain | Out-Null"), false);
+    assert.equal(commandHasWrite("ls 2>/dev/null"), false);
+    assert.equal(commandHasWrite("Get-Content x > out.txt"), true);
+    assert.equal(commandHasWrite("Get-ChildItem 2>$null > out.txt"), true);
+  });
+});
+
+describe("stripThrowaway", () => {
+  it("drops throwaway redirects from argv, spaced or not, any case", () => {
+    assert.deepEqual(stripThrowawayArgv(["Get-ChildItem", "brain", "2>$null"]), ["Get-ChildItem", "brain"]);
+    assert.deepEqual(stripThrowawayArgv(["Get-ChildItem", "brain", "2>", "$null"]), ["Get-ChildItem", "brain"]);
+    assert.deepEqual(stripThrowawayArgv(["Get-ChildItem", "brain", ">", "$NULL"]), ["Get-ChildItem", "brain"]);
+    assert.deepEqual(stripThrowawayArgv(["node", "build.js", "2>&1"]), ["node", "build.js"]);
+    assert.deepEqual(stripThrowawayArgv(["Get-ChildItem", "|", "Out-Null"]), ["Get-ChildItem"]);
+    assert.deepEqual(stripThrowawayArgv(["Get-ChildItem", "|", "out-null"]), ["Get-ChildItem"]);
+    assert.deepEqual(stripThrowawayArgv(["ls", "2>/dev/null"]), ["ls"]);
+  });
+
+  it("leaves real redirects and lone $null alone", () => {
+    assert.deepEqual(stripThrowawayArgv(["Get-Content", "x", ">", "out.txt"]), ["Get-Content", "x", ">", "out.txt"]);
+    assert.deepEqual(stripThrowawayArgv(["echo", "$null"]), ["echo", "$null"]);
+    assert.deepEqual(stripThrowawayArgv(["echo", "2>$nullx"]), ["echo", "2>$nullx"]);
+    assert.deepEqual(stripThrowawayArgv(["Get-ChildItem", "|", "Out-File", "f.txt"]), [
+      "Get-ChildItem",
+      "|",
+      "Out-File",
+      "f.txt",
+    ]);
+    assert.equal(stripThrowawayCommand("Get-Content $HOME\\x 2>$null").includes("$HOME"), true);
+  });
+
+  it("spots bare Out-Null sink stages", () => {
+    assert.equal(isSinkStage(["Out-Null"]), true);
+    assert.equal(isSinkStage(["out-null"]), true);
+    assert.equal(isSinkStage(["Out-Null", "x"]), false);
+    assert.equal(isSinkStage(["Get-ChildItem"]), false);
+    assert.equal(isSinkStage([]), false);
+  });
 });
 
 describe("isReadOnlyStage", () => {
@@ -213,6 +260,12 @@ describe("isReadOnlyStage", () => {
     assert.equal(isReadOnlyStage(["cat", "..\\..\\secret"], root), false);
     assert.equal(isReadOnlyStage(["cat", "/etc/passwd"], root), false);
     assert.equal(isReadOnlyStage(["Test-Path", "D:\\other\\x"], root), false);
+  });
+
+  it("ignores throwaway redirects, but no other write or $", () => {
+    assert.equal(isReadOnlyStage(["Get-ChildItem", "brain", "2>$null"], root), true);
+    assert.equal(isReadOnlyStage(["Get-Content", "x", ">", "out.txt"], root), false);
+    assert.equal(isReadOnlyStage(["Get-Content", "$HOME\\x", "2>$null"], root), false);
   });
 });
 
@@ -501,6 +554,16 @@ describe("autoAllowStage", () => {
     assert.equal(autoAllowStage(["Remove-Item", "notes.txt"], root, undefined, false), false);
     assert.equal(autoAllowStage(["Remove-Item", "notes.txt"], root, undefined, true), true);
     assert.equal(autoAllowStage(["npm", "test"], root, undefined, false), true);
+  });
+
+  it("ignores throwaway redirects, but no other write or $", () => {
+    assert.equal(autoAllowStage(["npm", "test", "2>$null"], root, "npm test 2>$null"), true);
+    assert.equal(autoAllowStage(["node", "build.js", "2>&1"], root), true);
+    assert.equal(autoAllowStage(["Out-Null"], root), true);
+    assert.equal(autoAllowStage(["npm", "test", ">", "out.log"], root, "npm test > out.log"), true);
+    assert.equal(autoAllowStage(["Get-Content", "x", ">", "out.txt"], root), false);
+    assert.equal(autoAllowStage(["Get-Content", "$HOME\\x", "2>$null"], root), false);
+    assert.equal(autoAllowStage(["node", "$file", "2>$null"], root), false);
   });
 });
 

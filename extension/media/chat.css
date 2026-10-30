@@ -392,8 +392,8 @@ body {
 #status {
   min-height: 1em;
   margin: 0 auto;
-  width: 33vw;
-  min-width: min(560px, calc(100% - 32px));
+  width: 38vw;
+  min-width: min(645px, calc(100% - 32px));
   max-width: calc(100% - 32px);
   color: var(--vscode-descriptionForeground);
   font-style: italic;
@@ -680,8 +680,8 @@ body.vscode-light .pill {
 
 #composer-wrap {
   position: relative;
-  width: 33vw;
-  min-width: min(560px, calc(100% - 32px));
+  width: 38vw;
+  min-width: min(645px, calc(100% - 32px));
   max-width: calc(100% - 32px);
   margin: 0 auto;
 }

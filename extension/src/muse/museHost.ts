@@ -49,6 +49,7 @@ import {
   findStageChoice,
   isReadOnlyStage,
   isRejectChoice,
+  isSinkStage,
   lookedAtRow,
   pickerTitle,
   rejectedRow,
@@ -1197,11 +1198,13 @@ export class MuseHost {
       stage &&
       this.workspaceRoot !== "" &&
       !commandHasWrite(request.subject.command) &&
-      isReadOnlyStage(argv, this.workspaceRoot)
+      (isReadOnlyStage(argv, this.workspaceRoot) || isSinkStage(argv))
     ) {
       const once = findStageChoice(request.availableChoices, "once");
       if (once !== undefined) {
-        pending.lookedAt.push(stageLabel(argv));
+        if (!isSinkStage(argv)) {
+          pending.lookedAt.push(stageLabel(argv));
+        }
         this.armQuietFlush(approvalId, pending);
         return this.answerQuietly(approvalId, once);
       }
@@ -1275,7 +1278,7 @@ export class MuseHost {
     if (!commandHasWrite(request.subject.command) && isReadOnlyStage(argv, this.workspaceRoot)) {
       pending.lookedAt.push(stageLabel(argv));
       this.armQuietFlush(approvalId, pending);
-    } else {
+    } else if (!isSinkStage(argv)) {
       this.emit({
         type: "tool",
         id: `auto-${approvalId}-${this.autoSeq++}`,

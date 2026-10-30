@@ -341,6 +341,17 @@ export function createSessionId(): string {
 
 const TOPIC_LIMIT = 40;
 
+/**
+ * Shorten a label to about 40 characters: whole words only, with a "…".
+ * A single word longer than that is hard-cut (there is no boundary).
+ */
+function shortenTopic(clean: string): string {
+  if (clean.length <= TOPIC_LIMIT) {
+    return clean;
+  }
+  return `${clean.slice(0, TOPIC_LIMIT - 1).replace(/\s+\S*$/, "")}…`;
+}
+
 /** Clean a topic for display: one line, bounded. */
 export function cleanTopic(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, TOPIC_LIMIT);
@@ -356,7 +367,7 @@ export function continuedTopic(text: string): string | undefined {
   if (!match) {
     return undefined;
   }
-  const topic = match[1].trim().replace(/[.?…]+$/, "").slice(0, TOPIC_LIMIT);
+  const topic = shortenTopic(match[1].trim().replace(/[.?…]+$/, ""));
   return topic === "" ? undefined : topic;
 }
 
@@ -374,7 +385,7 @@ export function topicFromFirstMessage(text: string): string {
   if (clean !== "" && isGreetingOnly(clean)) {
     return "";
   }
-  return clean.replace(/[.?…]+$/, "").slice(0, TOPIC_LIMIT);
+  return shortenTopic(clean.replace(/[.?…]+$/, ""));
 }
 
 /** True when nothing is left after the welcome's greetings are stripped. */
