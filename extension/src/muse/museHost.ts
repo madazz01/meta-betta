@@ -6,6 +6,7 @@
 // below are erased at compile time.
 
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { acquire as acquireTurn, current as lockHolder, release as releaseTurn, TurnBusyError } from "./turnLock.js";
 import type {
   ApprovalFailureHandler,
@@ -59,7 +60,14 @@ import {
   stageLabel,
   type RememberedDecision,
 } from "../lib/approvals.js";
-import { historyEvent, isSandboxBugFailure, reasoningText, toolRowText, type StepGroup } from "../lib/items.js";
+import {
+  formatWorkLog,
+  historyEvent,
+  isSandboxBugFailure,
+  reasoningText,
+  toolRowText,
+  type StepGroup,
+} from "../lib/items.js";
 import { decideSession } from "../lib/session.js";
 import { classifySpawnError, parseSandboxReady, shortReason, type SpawnProblem } from "../lib/startup.js";
 import type { SessionUsageTotals } from "../lib/usage.js";
@@ -101,7 +109,7 @@ export type MuseHostEvent =
   | PickerEvent
   | { type: "approvalDone"; id: string }
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
-  | { type: "turn"; state: "started" | "done" }
+  | { type: "turn"; state: "started" | "done"; finalId?: string; line?: string; replay?: boolean }
   | { type: "usage"; usage: SessionUsageTotals }
   | { type: "goal"; goal: GoalInfo | null }
   | { type: "model"; modelId: string }
@@ -260,6 +268,11 @@ export class MuseHost {
   private autoSeq = 0;
   /** The session currently running wild in allowAll, if this tab chose All. */
   private approvalAllFor: string | undefined;
+  /** The running turn's work-log tallies, reset by every send. */
+  private turnActive = false;
+  private turnStartedAt = 0;
+  private turnLastAssistant: string | undefined;
+  private turnCounts = { reads: 0, commands: 0, edits: 0 };
   private recapWaiters = new Map<
     string,
     {
@@ -298,6 +311,10 @@ export class MuseHost {
   private async runTurn(text: string, workspaceRoot: string): Promise<void> {
     this.turnGen += 1;
     const state = newTurnState(this.turnGen);
+    this.turnActive = true;
+    this.turnStartedAt = Date.now();
+    this.turnLastAssistant = undefined;
+    this.turnCounts = { reads: 0, commands: 0, edits: 0 };
     this.emit({ type: "turn", state: "started" });
     let session: HostSession;
     try {
@@ -362,9 +379,37 @@ export class MuseHost {
     }
   }
 
+  /**
+   * Steer a queued message into the running turn (Send now). True when the
+   * server took it; false when there is no running turn or the turn ended in
+   * the meantime — the caller sends it fresh instead. Never throws.
+   */
+  public async steer(text: string): Promise<boolean> {
+    const turnId = this.currentTurnId;
+    const session = this.session;
+    const connection = this.connection;
+    if (!turnId || !session || !connection) {
+      return false;
+    }
+    try {
+      checkAccepted(
+        await connection.command("turn/steer", {
+          commandId: createCommandId(),
+          expectedTurnId: turnId,
+          input: [{ type: "text", text }],
+          sessionId: session.sessionId,
+        }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   public async dispose(): Promise<void> {
     this.turnGen += 1;
     this.currentTurnId = undefined;
+    this.turnActive = false;
     // A turn stuck awaiting completion must not wedge every other tab.
     if (lockHolder() === this.turnOwner()) {
       releaseTurn(this.turnOwner());
@@ -470,6 +515,7 @@ export class MuseHost {
   private localStop(): void {
     this.turnGen += 1;
     this.currentTurnId = undefined;
+    this.turnActive = false;
     for (const finish of this.approvalWaiters) {
       finish(undefined);
     }
@@ -493,6 +539,7 @@ export class MuseHost {
     }
     this.turnGen += 1;
     this.currentTurnId = undefined;
+    this.turnActive = false;
     this.sandboxBugNoted = false;
     for (const finish of this.approvalWaiters) {
       finish(undefined);
@@ -538,6 +585,7 @@ export class MuseHost {
     }
     this.turnGen += 1;
     this.currentTurnId = undefined;
+    this.turnActive = false;
     this.sandboxBugNoted = false;
     for (const finish of this.approvalWaiters) {
       finish(undefined);
@@ -901,6 +949,17 @@ export class MuseHost {
   }
 
   private emit(event: MuseHostEvent): void {
+    if (this.turnActive && event.type === "tool" && event.group) {
+      // Every tool row counts once toward the work-log line, wherever it was
+      // emitted from. Searches fold into reads; "other" rows list but don't count.
+      if (event.group === "read" || event.group === "search") {
+        this.turnCounts.reads += 1;
+      } else if (event.group === "command") {
+        this.turnCounts.commands += 1;
+      } else if (event.group === "edit") {
+        this.turnCounts.edits += 1;
+      }
+    }
     this.options.emit(event);
   }
 
@@ -1127,6 +1186,28 @@ export class MuseHost {
   private loadHistory(session: HostSession): number {
     let count = 0;
     let skippingSave = false;
+    // Resumed turns regroup like live ones: each user message opens a span,
+    // closed with a derived line before the next user message or the end.
+    // Server history keeps no tool rows, so spans count time, not steps.
+    let span: { userAt?: number; lastAt?: number; finalId?: string } | undefined;
+    const closeSpan = (): void => {
+      if (!span) {
+        return;
+      }
+      const seconds =
+        span.userAt !== undefined && span.lastAt !== undefined
+          ? Math.max(0, Math.round((span.lastAt - span.userAt) / 1000))
+          : 0;
+      const done: MuseHostEvent = {
+        type: "turn",
+        state: "done",
+        replay: true,
+        ...(span.finalId ? { finalId: span.finalId } : {}),
+        line: formatWorkLog({ seconds, reads: 0, commands: 0, edits: 0 }),
+      };
+      span = undefined;
+      this.emit(done);
+    };
     for (const item of session.fold.items.list()) {
       const event = historyEvent({
         kind: String(item.kind),
@@ -1152,15 +1233,23 @@ export class MuseHost {
         if (skippingSave) {
           continue;
         }
+        closeSpan();
         this.emit({ type: "user", text, ...(event.at === undefined ? {} : { at: event.at }) });
+        this.emit({ type: "turn", state: "started", replay: true });
+        span = { userAt: event.at };
       } else {
         if (skippingSave && event.type === "assistant") {
           continue;
+        }
+        if (span && event.type === "assistant") {
+          span.lastAt = event.at ?? span.lastAt;
+          span.finalId = event.id;
         }
         this.emit(event);
       }
       count += 1;
     }
+    closeSpan();
     return count;
   }
 
@@ -1226,6 +1315,10 @@ export class MuseHost {
               done: true,
               group: "edit",
             });
+            // One row can name several files; the work-log line counts files.
+            if (this.turnActive) {
+              this.turnCounts.edits += Math.max(0, backup.files.length - 1);
+            }
           }
           return this.answerQuietly(approvalId, once);
         }
@@ -1441,6 +1534,10 @@ export class MuseHost {
       done: true,
       group: "read",
     });
+    // One row can name several reads; the work-log line counts files.
+    if (this.turnActive) {
+      this.turnCounts.reads += Math.max(0, labels.length - 1);
+    }
   }
 
   private flushAllQuiet(): void {
@@ -1502,6 +1599,7 @@ export class MuseHost {
             state.settled.add(item.itemId);
           }
           state.assistant.set(item.itemId, text);
+          this.turnLastAssistant = item.itemId;
           this.emit({ type: "assistant", id: item.itemId, text, at: Date.now() });
         }
         return;
@@ -1585,6 +1683,7 @@ export class MuseHost {
     if (kind === "agentMessage" && field === "text") {
       const text = (state.assistant.get(delta.itemId) ?? "") + delta.delta;
       state.assistant.set(delta.itemId, text);
+      this.turnLastAssistant = delta.itemId;
       this.emit({ type: "assistant", id: delta.itemId, text, at: Date.now() });
     } else if (kind === "reasoning" && field.startsWith("summary")) {
       const text = (state.thinking.get(delta.itemId) ?? "") + delta.delta;
@@ -1631,10 +1730,14 @@ export class MuseHost {
     }
     this.flushAllQuiet();
     this.currentTurnId = undefined;
+    const seconds = Math.max(0, Math.round((Date.now() - this.turnStartedAt) / 1000));
+    const line = formatWorkLog({ seconds, ...this.turnCounts });
+    const finalId = this.turnLastAssistant;
+    this.turnActive = false;
     if (notice) {
       this.emit({ type: "notice", kind: notice.kind, text: notice.text });
     }
-    this.emit({ type: "turn", state: "done" });
+    this.emit({ type: "turn", state: "done", ...(finalId ? { finalId } : {}), line });
     this.emit({ type: "status", text: "Ready" });
   }
 
@@ -1642,6 +1745,7 @@ export class MuseHost {
     if (gen !== this.turnGen) {
       return;
     }
+    this.turnActive = false;
     const problem = classifySpawnError(error);
     if (this.options.onSetupNeeded) {
       this.options.onSetupNeeded({ reason: shortReason(error), problem });
@@ -1709,6 +1813,30 @@ export class MuseHost {
  * while the sandbox workaround is on (Muse bug: every shell command fails in
  * serve mode). One helper so it's easy to remove the day Meta fixes it.
  */
+/**
+ * A UUIDv7 idempotency handle for turn/steer: millis plus random bits, with
+ * the version and variant nibbles set. The test seam takes the clock and the
+ * ten random bytes.
+ */
+export function createCommandId(now = Date.now(), rand: Uint8Array = randomBytes(10)): string {
+  const bytes = new Array<number>(16).fill(0);
+  let millis = Math.max(0, Math.floor(now));
+  for (let index = 5; index >= 0; index -= 1) {
+    bytes[index] = millis % 256;
+    millis = Math.floor(millis / 256);
+  }
+  bytes[6] = ((rand[0] ?? 0) & 0x0f) | 0x70;
+  bytes[7] = rand[1] ?? 0;
+  bytes[8] = ((rand[2] ?? 0) & 0x3f) | 0x80;
+  for (let index = 9; index < 16; index += 1) {
+    bytes[index] = rand[index - 6] ?? 0;
+  }
+  const hex = bytes
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function serveArgs(platform: string, trustWorkspace: boolean, workaround: boolean): string[] {
   const args = ["serve"];
   if (trustWorkspace) {

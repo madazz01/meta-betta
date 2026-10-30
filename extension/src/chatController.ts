@@ -38,6 +38,7 @@ import {
   swapShortcutSlot,
 } from "./commands/shortcuts.js";
 import { parseCardButton, parseCardInput, parseNudgeAnswer, parseSendMessage } from "./lib/chat.js";
+import { formatWorkLog } from "./lib/items.js";
 import type { StepGroup } from "./lib/items.js";
 import { parseFileLink } from "./lib/links.js";
 import {
@@ -205,7 +206,8 @@ type TranscriptEvent =
   | { type: "busy"; text: string }
   | { type: "busyDone" }
   | { type: "boxLock"; locked: boolean; text?: string }
-  | { type: "tabId"; id: string };
+  | { type: "tabId"; id: string }
+  | { type: "turn"; state: "started" | "done"; finalId?: string; line?: string; replay?: boolean };
 
 const HISTORY_LIMIT = 500;
 const SESSION_ID_KEY = "metaBetta.sessionId";
@@ -363,6 +365,11 @@ export class ChatController {
     for (const event of this.history) {
       sink.post(event);
     }
+    for (const item of this.queue.list()) {
+      if (!item.recorded) {
+        sink.post({ type: "queued", id: item.id, text: item.text });
+      }
+    }
     sink.post({ type: "turn", state: this.running ? "started" : "done" });
     sink.post({ type: "status", text: this.lastStatus });
     sink.post({ type: "tabId", id: this.tabHost.uid });
@@ -507,16 +514,18 @@ export class ChatController {
       });
       return;
     }
+    await this.fileWelcomeAnswer(folder, text);
+    if (lockHolder() !== undefined) {
+      // Queued behind the running turn: the bubble records when it sends, so
+      // a waiting message never skews the undo anchors or shows twice.
+      this.enqueueMessage(text);
+      return;
+    }
     // Recorded only once the turn will actually run: a failed send never
     // reaches the server, and a ghost user message would skew the undo
     // anchors on resume.
     this.recordAndBroadcast({ type: "user", text, at: Date.now() });
     this.storeSet(this.tabKey(LAST_MESSAGE_KEY), Date.now());
-    await this.fileWelcomeAnswer(folder, text);
-    if (lockHolder() !== undefined) {
-      this.enqueueMessage(text);
-      return;
-    }
     await this.sendNow(folder, text);
     if (this.welcomeAfterTurn) {
       // The greeting's turn is done and the lock is free: ask the deferred name.
@@ -623,7 +632,8 @@ export class ChatController {
       await host.send(peek ? `${prompt}\n\n${peek.block}` : prompt, folder.uri.fsPath);
     } catch (error) {
       if (error instanceof TurnBusyError) {
-        this.enqueueMessage(text);
+        // Lost the lock race after recording: the bubble stays, no extra row.
+        this.enqueueMessage(text, true);
         return;
       }
       throw error;
@@ -650,15 +660,21 @@ export class ChatController {
   }
 
   /**
-   * The lock is held: the message stays visible and sends in order when the
-   * lock frees. The box locks at five until the queue drains.
+   * The lock is held: the message waits as a muted row and sends in order
+   * when the lock frees. The box locks at five until the queue drains.
+   * `recorded` marks a lost lock race: its bubble is already showing, so no
+   * extra row goes up for it.
    */
-  private enqueueMessage(text: string): void {
-    if (!this.queue.push(text)) {
+  private enqueueMessage(text: string, recorded = false): void {
+    const id = this.queue.push(text, recorded);
+    if (id === undefined) {
       this.showBusy();
       return;
     }
     this.log(queueQueuedNote(this.tabHost.uid, this.queue.size, lockHolder()));
+    if (!recorded) {
+      this.broadcast({ type: "queued", id, text });
+    }
     this.showBusy();
     this.ensureRetry();
   }
@@ -667,8 +683,64 @@ export class ChatController {
   private dropQueue(why: string): void {
     if (this.queue.size > 0) {
       this.log(queueDroppedNote(this.tabHost.uid, this.queue.size, why));
+      for (const item of this.queue.list()) {
+        if (!item.recorded) {
+          this.broadcast({ type: "queueDrop", id: item.id });
+        }
+      }
     }
     this.queue.clear();
+  }
+
+  /** ✕ on a queued row: take it out and tidy the box. */
+  public cancelQueued(id: string): void {
+    if (this.queue.remove(id) === undefined) {
+      return;
+    }
+    this.broadcast({ type: "queueDrop", id });
+    this.settleRetry();
+  }
+
+  /** Send now on a queued row: steer it into the running turn, else send it first next. */
+  public async steerQueued(id: string): Promise<void> {
+    const taken = this.queue.remove(id);
+    if (taken === undefined) {
+      return;
+    }
+    this.broadcast({ type: "queueDrop", id });
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    let host: MuseHost | undefined;
+    try {
+      host = folder ? await this.ensureHost(folder) : undefined;
+    } catch {
+      host = undefined;
+    }
+    if (host && (await host.steer(taken.text))) {
+      this.settleRetry();
+      return;
+    }
+    // The turn just ended (or never started): it goes first, as a fresh turn.
+    const front = this.queue.unshift(taken.text, taken.recorded);
+    if (front === undefined) {
+      const kept = taken.text.length > 120 ? `${taken.text.slice(0, 119)}…` : taken.text;
+      this.recordAndBroadcast({
+        type: "notice",
+        kind: "info",
+        text: `That turn just ended, and five messages are already waiting — this one didn't send: "${kept}"`,
+      });
+      this.settleRetry();
+      return;
+    }
+    if (!taken.recorded) {
+      this.broadcast({ type: "queued", id: front, text: taken.text });
+    }
+    this.recordAndBroadcast({
+      type: "notice",
+      kind: "info",
+      text: "That turn just ended — sending it fresh.",
+    });
+    this.settleRetry();
+    this.ensureRetry();
   }
 
   private ensureRetry(): void {
@@ -693,7 +765,13 @@ export class ChatController {
     try {
       if (next !== undefined && folder) {
         this.log(queueSentNote(this.tabHost.uid));
-        await this.sendNow(folder, next);
+        if (!next.recorded) {
+          // The muted row becomes the real bubble as its turn starts.
+          this.broadcast({ type: "queueDrop", id: next.id });
+          this.recordAndBroadcast({ type: "user", text: next.text, at: Date.now() });
+          this.storeSet(this.tabKey(LAST_MESSAGE_KEY), Date.now());
+        }
+        await this.sendNow(folder, next.text);
       } else if (
         next === undefined &&
         this.pendingSave === "full" &&
@@ -728,6 +806,15 @@ export class ChatController {
   private showBusy(): void {
     const holder = lockHolder();
     if (holder === undefined || this.queue.size === 0) {
+      return;
+    }
+    if (holder === this.tabHost.uid) {
+      // Our own turn is running: the box stays usable until five wait.
+      this.broadcast({
+        type: "boxLock",
+        locked: this.queue.full,
+        ...(this.queue.full ? { text: "Five messages are already waiting — it'll get to these" } : {}),
+      });
       return;
     }
     const name = this.tabHost.labelOf(holder);
@@ -2130,6 +2217,43 @@ export class ChatController {
               this.log(`Resume: stored transcript (${stored.length} entries)`);
             }
             const replayed = new Set<string>();
+            // Replayed turns regroup like live ones: each user entry opens a
+            // span, closed with a derived line before the next user entry or
+            // the end. Entries before the first user stay flat (their turn is
+            // cut off, so no span can be known).
+            let span:
+              | {
+                  userAt?: number;
+                  lastAt?: number;
+                  finalId?: string;
+                  reads: number;
+                  commands: number;
+                  edits: number;
+                }
+              | undefined;
+            const closeSpan = (): void => {
+              if (!span) {
+                return;
+              }
+              const seconds =
+                span.userAt !== undefined && span.lastAt !== undefined
+                  ? Math.max(0, Math.round((span.lastAt - span.userAt) / 1000))
+                  : 0;
+              const done = {
+                type: "turn" as const,
+                state: "done" as const,
+                replay: true,
+                ...(span.finalId ? { finalId: span.finalId } : {}),
+                line: formatWorkLog({
+                  seconds,
+                  reads: span.reads,
+                  commands: span.commands,
+                  edits: span.edits,
+                }),
+              };
+              span = undefined;
+              this.recordAndBroadcast(done);
+            };
             stored.forEach((entry, index) => {
               if (entry.role === "undo" && entry.id) {
                 this.emitReplayedUndo(entry.id);
@@ -2138,6 +2262,15 @@ export class ChatController {
               } else if (entry.role === "nudge" && entry.id && entry.answer) {
                 this.recordAndBroadcast({ type: "nudgeAnswered", id: entry.id, answer: entry.answer });
               } else if (entry.role === "tool") {
+                if (span) {
+                  if (entry.group === "read" || entry.group === "search") {
+                    span.reads += 1;
+                  } else if (entry.group === "command") {
+                    span.commands += 1;
+                  } else if (entry.group === "edit") {
+                    span.edits += 1;
+                  }
+                }
                 this.recordAndBroadcast({
                   type: "tool",
                   id: entry.id ?? `stored-${index}`,
@@ -2152,14 +2285,25 @@ export class ChatController {
                   id: entry.id ?? `stored-${index}`,
                   text: entry.text,
                 });
+              } else if (entry.role === "user") {
+                closeSpan();
+                this.recordAndBroadcast({ type: "user", text: entry.text, at: entry.at });
+                this.recordAndBroadcast({ type: "turn", state: "started", replay: true });
+                span = { userAt: entry.at, reads: 0, commands: 0, edits: 0 };
               } else {
-                this.recordAndBroadcast(
-                  entry.role === "user"
-                    ? { type: "user", text: entry.text, at: entry.at }
-                    : { type: "assistant", id: `stored-${index}`, text: entry.text, at: entry.at },
-                );
+                if (span) {
+                  span.lastAt = entry.at ?? span.lastAt;
+                  span.finalId = `stored-${index}`;
+                }
+                this.recordAndBroadcast({
+                  type: "assistant",
+                  id: `stored-${index}`,
+                  text: entry.text,
+                  at: entry.at,
+                });
               }
             });
+            closeSpan();
             for (const undo of loaded) {
               if (!replayed.has(undo.id)) {
                 this.log(`${undo.id}: not in stored transcript`);
@@ -2732,8 +2876,13 @@ export class ChatController {
       return;
     }
     if (event.type === "turn") {
+      if (event.replay === true) {
+        // A resumed span regroups the panel, with none of a live turn's chores.
+        this.recordAndBroadcast(event);
+        return;
+      }
       this.running = event.state === "started";
-      this.broadcast(event);
+      this.recordAndBroadcast(event);
       if (!this.running) {
         this.persistTranscript();
         if (this.welcomeStep === "memory") {
@@ -2808,7 +2957,7 @@ export class ChatController {
     }
     if (event.type === "turn") {
       this.running = event.state === "started";
-      this.broadcast(event);
+      this.broadcast({ ...event, save: true });
       if (!this.running) {
         this.persistTranscript();
       }
@@ -2945,6 +3094,14 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
   }
   if (message.type === "stop") {
     controller.stop();
+    return;
+  }
+  if (message.type === "dequeue" && typeof message.id === "string") {
+    controller.cancelQueued(message.id);
+    return;
+  }
+  if (message.type === "steerQueue" && typeof message.id === "string") {
+    void controller.steerQueued(message.id);
     return;
   }
   if (message.type === "saveMyDay") {

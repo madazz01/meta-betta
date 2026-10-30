@@ -678,6 +678,86 @@ body.vscode-light .pill {
   padding: 4px 0 2px 12px;
 }
 
+/* One work log per turn: the interim words and steps fold in, the last word shows below. */
+.worklog {
+  margin: 2px 0;
+}
+
+.worklog-line {
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+}
+
+.worklog-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 4px 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--vscode-widget-border);
+}
+
+.worklog-items .assistant-reply {
+  margin: 0;
+}
+
+/* The live line under the log: Muse's latest words, one line. */
+.now-line {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-size: 0.85em;
+  margin: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.now-line[hidden] {
+  display: none;
+}
+
+/* A message waiting behind the running turn: muted, with Send now and ✕. */
+.queued-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px dashed var(--vscode-widget-border);
+  border-radius: 6px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.queued-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.queued-send,
+.queued-cancel {
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.queued-send:hover,
+.queued-cancel:hover {
+  color: var(--mb-accent);
+  text-decoration: underline;
+}
+
+.queued-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+  text-decoration: none;
+}
+
 #composer-wrap {
   position: relative;
   width: 38vw;

@@ -454,6 +454,18 @@ describe("previousUserLeftHanging", () => {
       ]),
       "do the thing",
     );
+    // Turn markers group the panel; the hanging check skips them.
+    assert.equal(
+      previousUserLeftHanging([
+        { type: "user", text: "do the thing" },
+        { type: "turn" },
+        { type: "assistant", text: "on it" },
+        { type: "turn" },
+        { type: "user", text: "morning" },
+        { type: "turn" },
+      ]),
+      undefined,
+    );
   });
 
   it("finds nothing when the last message got a reply", () => {

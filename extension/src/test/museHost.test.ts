@@ -5,6 +5,7 @@ import type { ApprovalRequestParams, Notification } from "@muse-code/sdk/dist/sr
 import { acquire as acquireTurn, current as lockHolder, release as releaseTurn, TurnBusyError } from "../muse/turnLock.js";
 import {
   chainNotifications,
+  createCommandId,
   MuseHost,
   serveArgs,
   serveEnv,
@@ -291,6 +292,157 @@ function historySession(sessionId: string, history: FoldedItem[]): HostSession {
     fold: { items: { list: () => history } },
   };
 }
+
+describe("work log", () => {
+  it("ends the turn with counts, line and final id", async () => {
+    const fake = fakeItemTurns([
+      [
+        { kind: "agentMessage", itemId: "a1", revision: 1, status: "completed", text: "looking…" },
+        { kind: "toolCall", itemId: "t1", revision: 1, status: "completed", tool: "read" },
+        { kind: "userShell", itemId: "t2", revision: 1, status: "completed", commandText: "npm test" },
+        { kind: "toolCall", itemId: "t3", revision: 1, status: "completed", tool: "edit" },
+        { kind: "agentMessage", itemId: "a2", revision: 2, status: "completed", text: "done!" },
+      ],
+    ]);
+    await fake.host.send("do it", process.cwd());
+    await fake.host.dispose();
+    const done = fake.events.find((event) => event.type === "turn" && event.state === "done");
+    assert.ok(done && done.type === "turn");
+    assert.equal(done.finalId, "a2");
+    assert.match(done.line ?? "", /read 1 file · ran 1 command · edited 1 file/);
+  });
+
+  it("skips the final id when no message ends the turn", async () => {
+    const fake = fakeItemTurns([
+      [{ kind: "toolCall", itemId: "t1", revision: 1, status: "completed", tool: "read" }],
+    ]);
+    await fake.host.send("look", process.cwd());
+    await fake.host.dispose();
+    const done = fake.events.find((event) => event.type === "turn" && event.state === "done");
+    assert.ok(done && done.type === "turn");
+    assert.equal(done.finalId, undefined);
+    assert.match(done.line ?? "", /read 1 file/);
+  });
+
+  it("regroups resumed history into spans with derived lines", async () => {
+    const fake = fakeStoredSession({
+      savedId: "saved-1",
+      history: [
+        {
+          kind: "userMessage",
+          itemId: "u1",
+          revision: 1,
+          status: "completed",
+          text: "first",
+          recordedAt: "2026-10-30T10:00:00.000Z",
+        },
+        {
+          kind: "agentMessage",
+          itemId: "a1",
+          revision: 2,
+          status: "completed",
+          text: "working on it",
+          recordedAt: "2026-10-30T10:00:10.000Z",
+        },
+        {
+          kind: "agentMessage",
+          itemId: "a2",
+          revision: 3,
+          status: "completed",
+          text: "first answer",
+          recordedAt: "2026-10-30T10:01:00.000Z",
+        },
+        {
+          kind: "userMessage",
+          itemId: "u2",
+          revision: 4,
+          status: "completed",
+          text: "second",
+          recordedAt: "2026-10-30T10:02:00.000Z",
+        },
+        {
+          kind: "agentMessage",
+          itemId: "a3",
+          revision: 5,
+          status: "completed",
+          text: "second answer",
+          recordedAt: "2026-10-30T10:02:05.000Z",
+        },
+      ],
+    });
+    const shown = await fake.host.prepare(process.cwd());
+    await fake.host.dispose();
+    assert.equal(shown, 5);
+    const turns = fake.events.filter((event) => event.type === "turn");
+    assert.deepEqual(
+      turns.map((event) => (event.type === "turn" ? [event.state, event.replay] : [])),
+      [
+        ["started", true],
+        ["done", true],
+        ["started", true],
+        ["done", true],
+      ],
+    );
+    const dones = turns.filter((event) => event.type === "turn" && event.state === "done");
+    assert.equal(dones[0]?.type === "turn" ? dones[0].finalId : undefined, "a2");
+    assert.equal(dones[0]?.type === "turn" ? dones[0].line : undefined, "Worked 1m");
+    assert.equal(dones[1]?.type === "turn" ? dones[1].finalId : undefined, "a3");
+    assert.equal(dones[1]?.type === "turn" ? dones[1].line : undefined, "Worked 5s");
+  });
+});
+
+describe("steer", () => {
+  it("steers into the running turn with a command id", async () => {
+    const fake = fakeRunningTurn((method, params, f) => {
+      f.commands.push({ method, params });
+      return { status: "accepted", commandId: "cmd-1" };
+    });
+    const sending = fake.host.send("hello", process.cwd());
+    await fake.submitted;
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(await fake.host.steer("actually, do it twice"), true);
+    fake.finishTurn(terminalOutcome("completed"));
+    await sending;
+    await fake.host.dispose();
+    const steered = fake.commands.find((entry) => entry.method === "turn/steer");
+    assert.ok(steered);
+    assert.equal(steered.params.sessionId, "session-1");
+    assert.equal(steered.params.expectedTurnId, "turn-1");
+    assert.deepEqual(steered.params.input, [{ type: "text", text: "actually, do it twice" }]);
+    assert.match(
+      String(steered.params.commandId),
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it("fails softly with no running turn, or a refused steer", async () => {
+    const idle = fakeCommands({});
+    assert.equal(await idle.host.steer("hello?"), false);
+    await idle.host.dispose();
+    const refusing = fakeRunningTurn((method, params, f) => {
+      f.commands.push({ method, params });
+      throw new Error("turn settled");
+    });
+    const sending = refusing.host.send("hello", process.cwd());
+    await refusing.submitted;
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(await refusing.host.steer("too late"), false);
+    refusing.finishTurn(terminalOutcome("completed"));
+    await sending;
+    await refusing.host.dispose();
+  });
+});
+
+describe("createCommandId", () => {
+  it("makes UUIDv7 handles, deterministic on the seam", () => {
+    const rand = Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    const first = createCommandId(0, rand);
+    assert.equal(first, createCommandId(0, rand));
+    assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.ok(first.startsWith("00000000-0000-7"));
+    assert.match(createCommandId(), /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+});
 
 describe("chainNotifications", () => {
   it("fires every handler, newest first, on the single slot", () => {

@@ -49,6 +49,12 @@
   const undoEls = new Map();
   const nudgeEls = new Map();
   const cardEls = new Map();
+  const queuedEls = new Map();
+  // One work log per turn: interim words, steps and thinking fold inside.
+  let logEl = null;
+  let logSummary = null;
+  let logContent = null;
+  let logNow = null;
   let slashList = [];
   let slashOpen = false;
   let slashIndex = 0;
@@ -150,7 +156,7 @@
   // The parent for a step row: the open group, or null when it stands alone.
   function foldStep(kind, id, failed, group) {
     if (!grouper) {
-      return stepParent();
+      return workParent();
     }
     const verdict = grouper.push(kind, failed === true, id, group);
     if (verdict.action !== "fold") {
@@ -164,7 +170,7 @@
       }
       return null;
     }
-    if (!stepsEl || !stepsEl.isConnected || stepsEl.parentElement !== stepParent()) {
+    if (!stepsEl || !stepsEl.isConnected || stepsEl.parentElement !== workParent()) {
       stepsEl = document.createElement("details");
       stepsEl.className = "steps";
       stepsSummary = document.createElement("summary");
@@ -173,7 +179,7 @@
       stepsList.className = "steps-list";
       stepsEl.appendChild(stepsSummary);
       stepsEl.appendChild(stepsList);
-      stepParent().appendChild(stepsEl);
+      workParent().appendChild(stepsEl);
     }
     stepsSummary.textContent = verdict.summary;
     return stepsList;
@@ -186,10 +192,88 @@
     return turnEl;
   }
 
-  // The message box stays disabled while a picker is up or the queue is full.
+  // The parent for turn work (replies, thinking, steps): inside the open work
+  // log, else the turn container as before. Cards, notices and questions stay
+  // outside the log; they append to stepParent directly.
+  function workParent() {
+    if (logContent && logContent.isConnected) {
+      return logContent;
+    }
+    return stepParent();
+  }
+
+  function openWorkLog() {
+    if (logContent && logContent.isConnected) {
+      return;
+    }
+    breakSteps();
+    const parent = stepParent();
+    logEl = document.createElement("details");
+    logEl.className = "worklog";
+    logSummary = document.createElement("summary");
+    logSummary.className = "worklog-line";
+    logSummary.textContent = "Working…";
+    logContent = document.createElement("div");
+    logContent.className = "worklog-items";
+    logEl.appendChild(logSummary);
+    logEl.appendChild(logContent);
+    parent.appendChild(logEl);
+    logNow = document.createElement("div");
+    logNow.className = "now-line";
+    logNow.hidden = true;
+    parent.appendChild(logNow);
+  }
+
+  // The live line under the log: Muse's latest words, one line, replaced as
+  // each new message arrives.
+  function noteNow(text) {
+    if (!logNow || !logNow.isConnected) {
+      return;
+    }
+    const first = String(text).split("\n", 1)[0].slice(0, 120);
+    logNow.textContent = `Now: ${first}`;
+    logNow.hidden = first.trim() === "";
+    scrollToBottom();
+  }
+
+  // The turn ended: the last message shows in full below the log, the log
+  // keeps its line, and an empty log leaves no husk behind.
+  function closeWorkLog(finalId, line) {
+    const content = logContent;
+    const el = logEl;
+    const now = logNow;
+    const summary = logSummary;
+    logEl = null;
+    logSummary = null;
+    logContent = null;
+    logNow = null;
+    if (!content || !content.isConnected || !el) {
+      return;
+    }
+    if (now) {
+      now.remove();
+    }
+    if (typeof finalId === "string") {
+      const reply = assistantEls.get(finalId);
+      if (reply && content.contains(reply) && el.parentElement) {
+        el.parentElement.appendChild(reply);
+      }
+    }
+    if (content.children.length === 0) {
+      el.remove();
+    } else if (summary) {
+      summary.textContent = typeof line === "string" && line ? line : "Worked on this";
+    }
+    breakSteps();
+    scrollToBottom();
+  }
+
+  // The box stays usable while Muse works (Enter queues); it locks only for
+  // a waiting picker or a full queue.
   function updateComposer() {
-    input.disabled = running || pickerQueue.length > 0 || boxLocked;
-    input.placeholder = boxLocked && boxLockText ? boxLockText : defaultPlaceholder;
+    input.disabled = pickerQueue.length > 0 || boxLocked;
+    input.placeholder =
+      boxLocked && boxLockText ? boxLockText : running ? "Muse is working… Enter queues a follow-up" : defaultPlaceholder;
   }
 
   function setRunning(next) {
@@ -269,6 +353,50 @@
     scrollToBottom();
   }
 
+  // A message typed while Muse works: muted, with ✕ to drop it and Send now
+  // to steer it into the running turn. It becomes a real bubble when sent.
+  function addQueued(id, text) {
+    hideEmptyState();
+    dropQueued(id);
+    const row = document.createElement("div");
+    row.className = "queued-row";
+    const label = document.createElement("span");
+    label.className = "queued-text";
+    label.textContent = `Queued: ${text}`;
+    const sendNow = document.createElement("button");
+    sendNow.type = "button";
+    sendNow.className = "queued-send";
+    sendNow.textContent = "Send now";
+    sendNow.title = "Send into the running turn";
+    sendNow.addEventListener("click", () => {
+      sendNow.disabled = true;
+      vscode.postMessage({ type: "steerQueue", id });
+    });
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "queued-cancel";
+    cancel.textContent = "✕";
+    cancel.title = "Don't send";
+    cancel.setAttribute("aria-label", "Don't send this message");
+    cancel.addEventListener("click", () => {
+      vscode.postMessage({ type: "dequeue", id });
+    });
+    row.appendChild(label);
+    row.appendChild(sendNow);
+    row.appendChild(cancel);
+    messagesEl.appendChild(row);
+    queuedEls.set(id, row);
+    scrollToBottom();
+  }
+
+  function dropQueued(id) {
+    const row = queuedEls.get(id);
+    if (row) {
+      row.remove();
+      queuedEls.delete(id);
+    }
+  }
+
   function upsertAssistant(id, text, time) {
     hideEmptyState();
     dropCatchingUp();
@@ -312,7 +440,7 @@
       meta.appendChild(copy);
       reply.appendChild(body);
       reply.appendChild(meta);
-      stepParent().appendChild(reply);
+      workParent().appendChild(reply);
       assistantEls.set(id, reply);
     }
     const nudge = findNudge(text);
@@ -322,6 +450,7 @@
       reply.querySelector(".assistant-text").innerHTML = renderReply(bodyText);
       assistantMarkdown.set(id, bodyText);
     }
+    noteNow(bodyText);
     reply.style.display = nudge && !bodyText ? "none" : "";
     if (nudge) {
       upsertNudgeCard(id, nudge);
@@ -850,7 +979,7 @@
       body.className = "thinking-text";
       details.appendChild(summary);
       details.appendChild(body);
-      (foldStep("thinking", id, false) || stepParent()).appendChild(details);
+      (foldStep("thinking", id, false) || workParent()).appendChild(details);
       entry = { el: details, started: Date.now() };
       thinkingEls.set(id, entry);
     }
@@ -867,7 +996,7 @@
     if (!parent) {
       // Standalone: a failed row, possibly moving out of its group.
       if (row && stepsList && row.parentElement === stepsList) {
-        stepParent().appendChild(row);
+        workParent().appendChild(row);
         if (stepsList.children.length === 0 && stepsEl) {
           stepsEl.remove();
           breakSteps();
@@ -875,7 +1004,7 @@
       } else if (!row) {
         row = document.createElement("div");
         row.className = "tool";
-        stepParent().appendChild(row);
+        workParent().appendChild(row);
         toolEls.set(id, row);
       }
     } else if (!row) {
@@ -1271,8 +1400,13 @@
     dropCatchingUp();
     closeTurn();
     breakSteps();
+    logEl = null;
+    logSummary = null;
+    logContent = null;
+    logNow = null;
     lastStampAt = 0;
     messagesEl.replaceChildren();
+    queuedEls.clear();
     assistantEls.clear();
     assistantMarkdown.clear();
     thinkingEls.clear();
@@ -1356,7 +1490,8 @@
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (running) {
+    if (running && event.submitter === sendButton) {
+      // The button says Stop while Muse works: one click away, always.
       vscode.postMessage({ type: "stop" });
       return;
     }
@@ -1617,12 +1752,28 @@
         break;
       case "turn":
         if (message.state === "started" || message.state === "done") {
-          if (message.state === "started") {
+          if (message.save === true) {
+            // A background save: no log, just the working state as before.
+            setRunning(message.state === "started");
+          } else if (message.state === "started") {
             openTurn();
+            openWorkLog();
+            setRunning(true);
           } else {
+            closeWorkLog(message.finalId, message.line);
             closeTurn();
+            setRunning(false);
           }
-          setRunning(message.state === "started");
+        }
+        break;
+      case "queued":
+        if (typeof message.id === "string" && typeof message.text === "string") {
+          addQueued(message.id, message.text);
+        }
+        break;
+      case "queueDrop":
+        if (typeof message.id === "string") {
+          dropQueued(message.id);
         }
         break;
       case "clear":

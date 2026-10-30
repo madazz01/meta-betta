@@ -99,6 +99,48 @@ export function reasoningText(
   return joined || text || "";
 }
 
+export interface WorkLogCounts {
+  seconds: number;
+  reads: number;
+  commands: number;
+  edits: number;
+}
+
+/**
+ * The work-log line for a finished turn: "Worked 14m · read 9 files · ran
+ * 14 commands · edited 12 files". Zero counts stay out; with nothing to say
+ * it falls back to "Worked on this". (The ▸ is the panel's own marker.)
+ */
+export function formatWorkLog(counts: WorkLogCounts): string {
+  const parts: string[] = [];
+  if (counts.seconds > 0) {
+    parts.push(`Worked ${formatWorkedTime(counts.seconds)}`);
+  }
+  if (counts.reads > 0) {
+    parts.push(`read ${counts.reads} ${counts.reads === 1 ? "file" : "files"}`);
+  }
+  if (counts.commands > 0) {
+    parts.push(`ran ${counts.commands} ${counts.commands === 1 ? "command" : "commands"}`);
+  }
+  if (counts.edits > 0) {
+    parts.push(`edited ${counts.edits} ${counts.edits === 1 ? "file" : "files"}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "Worked on this";
+}
+
+function formatWorkedTime(seconds: number): string {
+  if (seconds < 60) {
+    return `${Math.max(1, Math.floor(seconds))}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
+}
+
 export interface HistoryItemView {
   kind: string;
   itemId: string;

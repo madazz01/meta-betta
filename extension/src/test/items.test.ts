@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  formatWorkLog,
   historyEvent,
   isSandboxBugFailure,
   reasoningText,
@@ -230,5 +231,31 @@ describe("reasoningText", () => {
   it("falls back to raw text, then empty", () => {
     assert.equal(reasoningText([], "raw thoughts"), "raw thoughts");
     assert.equal(reasoningText(undefined, undefined), "");
+  });
+});
+
+describe("formatWorkLog", () => {
+  it("words the full line", () => {
+    assert.equal(
+      formatWorkLog({ seconds: 840, reads: 9, commands: 14, edits: 12 }),
+      "Worked 14m · read 9 files · ran 14 commands · edited 12 files",
+    );
+  });
+
+  it("uses singulars and drops zero counts", () => {
+    assert.equal(formatWorkLog({ seconds: 8, reads: 1, commands: 0, edits: 0 }), "Worked 8s · read 1 file");
+    assert.equal(formatWorkLog({ seconds: 61, reads: 0, commands: 1, edits: 0 }), "Worked 1m · ran 1 command");
+    assert.equal(formatWorkLog({ seconds: 0, reads: 0, commands: 0, edits: 3 }), "edited 3 files");
+  });
+
+  it("bands durations into seconds, minutes and hours", () => {
+    assert.equal(formatWorkLog({ seconds: 1, reads: 0, commands: 0, edits: 0 }), "Worked 1s");
+    assert.equal(formatWorkLog({ seconds: 59, reads: 0, commands: 0, edits: 0 }), "Worked 59s");
+    assert.equal(formatWorkLog({ seconds: 3600, reads: 0, commands: 0, edits: 0 }), "Worked 1h");
+    assert.equal(formatWorkLog({ seconds: 3900, reads: 0, commands: 0, edits: 0 }), "Worked 1h 5m");
+  });
+
+  it("falls back when there is nothing to say", () => {
+    assert.equal(formatWorkLog({ seconds: 0, reads: 0, commands: 0, edits: 0 }), "Worked on this");
   });
 });

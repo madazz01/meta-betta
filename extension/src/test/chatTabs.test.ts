@@ -72,23 +72,51 @@ describe("cleanTabRecords", () => {
 describe("MessageQueue", () => {
   it("holds five in order, then refuses", () => {
     const queue = new MessageQueue();
+    const ids: (string | undefined)[] = [];
     for (let index = 0; index < 5; index += 1) {
-      assert.equal(queue.push(`m${index}`), true);
+      ids.push(queue.push(`m${index}`));
     }
+    assert.ok(ids.every((id) => typeof id === "string"));
+    assert.equal(new Set(ids).size, 5);
     assert.equal(queue.full, true);
-    assert.equal(queue.push("m5"), false);
+    assert.equal(queue.push("m5"), undefined);
     assert.equal(queue.size, 5);
-    assert.equal(queue.shift(), "m0");
+    assert.equal(queue.shift()?.text, "m0");
     assert.equal(queue.full, false);
-    assert.equal(queue.push("m5"), true);
-    assert.deepEqual([queue.shift(), queue.shift(), queue.shift(), queue.shift(), queue.shift()], [
-      "m1",
-      "m2",
-      "m3",
-      "m4",
-      "m5",
-    ]);
+    assert.ok(typeof queue.push("m5") === "string");
+    assert.deepEqual(
+      [queue.shift(), queue.shift(), queue.shift(), queue.shift(), queue.shift()].map(
+        (item) => item?.text,
+      ),
+      ["m1", "m2", "m3", "m4", "m5"],
+    );
     assert.equal(queue.shift(), undefined);
+  });
+
+  it("removes one row by id, for ✕ and Send now", () => {
+    const queue = new MessageQueue();
+    queue.push("m0");
+    const second = queue.push("m1");
+    assert.equal(queue.remove("q9"), undefined);
+    assert.ok(second !== undefined);
+    assert.deepEqual(queue.remove(second), { id: second, text: "m1", recorded: false });
+    assert.equal(queue.size, 1);
+    assert.equal(queue.shift()?.text, "m0");
+  });
+
+  it("lists waiting rows oldest first, and jumps one to the front", () => {
+    const queue = new MessageQueue();
+    queue.push("m0");
+    queue.push("m1");
+    assert.deepEqual(
+      queue.list().map((item) => item.text),
+      ["m0", "m1"],
+    );
+    assert.ok(typeof queue.unshift("urgent") === "string");
+    assert.deepEqual(
+      queue.list().map((item) => item.text),
+      ["urgent", "m0", "m1"],
+    );
   });
 });
 

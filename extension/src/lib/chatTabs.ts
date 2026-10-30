@@ -202,23 +202,63 @@ export function queueDroppedNote(uid: string, waiting: number, why: string): str
   return `queue: ${uid} dropped ${waiting} waiting (${why})`;
 }
 
+/** One waiting message: its panel row id, its words, and whether its user bubble is already recorded. */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  recorded: boolean;
+}
+
 /** Typed messages waiting for the lock, oldest first. */
 export class MessageQueue {
-  private readonly items: string[] = [];
+  private readonly items: QueuedMessage[] = [];
+  private seq = 0;
 
   public constructor(private readonly limit = 5) {}
 
-  /** Queue a message; false when the queue is full. */
-  public push(text: string): boolean {
+  /**
+   * Queue a message at the back; the row id, or undefined when the queue is
+   * full. `recorded` marks a lost lock race: its bubble is already showing,
+   * so the panel shows no extra row for it.
+   */
+  public push(text: string, recorded = false): string | undefined {
     if (this.items.length >= this.limit) {
-      return false;
+      return undefined;
     }
-    this.items.push(text);
-    return true;
+    this.seq += 1;
+    const id = `q${this.seq}`;
+    this.items.push({ id, text, recorded });
+    return id;
   }
 
-  public shift(): string | undefined {
+  /** Queue a message at the front (a steer that missed its turn); undefined when full. */
+  public unshift(text: string, recorded = false): string | undefined {
+    if (this.items.length >= this.limit) {
+      return undefined;
+    }
+    this.seq += 1;
+    const id = `q${this.seq}`;
+    this.items.unshift({ id, text, recorded });
+    return id;
+  }
+
+  public shift(): QueuedMessage | undefined {
     return this.items.shift();
+  }
+
+  /** Take one message out by row id (✕, Send now); undefined when already gone. */
+  public remove(id: string): QueuedMessage | undefined {
+    const index = this.items.findIndex((item) => item.id === id);
+    if (index === -1) {
+      return undefined;
+    }
+    const [taken] = this.items.splice(index, 1);
+    return taken;
+  }
+
+  /** The waiting messages, oldest first, for re-attaching panels. */
+  public list(): readonly QueuedMessage[] {
+    return [...this.items];
   }
 
   public get size(): number {
