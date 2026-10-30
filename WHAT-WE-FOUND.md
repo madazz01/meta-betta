@@ -70,7 +70,7 @@ await spawned.connection.command("turn/interrupt", { sessionId, turnId });
 
 **What happens:** each approval request lists the command's stages as `argv`. For `Write-Output hello > out.txt` the stages are just `[["Write-Output","hello"]]`. The `> out.txt` part is gone, and you only see it in the full `command` text. Variables come through as-is too: `Get-Content $HOME\.gitconfig` arrives as `["Get-Content","$HOME","\\.gitconfig"]`.
 
-**Why it matters:** we auto-allow plain read-only steps (list files, read a file in the project) so you're not asked ten times to delete one file. Going by `argv` alone, that write to `out.txt` would have looked read-only.
+**Why it matters:** we auto-allow plain read-only steps (list files, read a file in the project), because deleting one file used to take ten clicks: most of them were Muse just looking around first. Going by `argv` alone, that write to `out.txt` would have looked read-only.
 
 **How we got over it:** before auto-allowing anything, Meta Betta checks the full command for `>` and write commands, refuses any path with `$ % ~`, a backtick or wildcards, and only auto-allows reads inside the project. Everything else goes to the picker.
 
