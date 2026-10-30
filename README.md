@@ -24,7 +24,7 @@ Meta Betta is built the way it asks you to work: one human steering, AIs doing t
 
 ## What we found while building
 
-Driving Muse through its SDK every day turned up a few things: a Windows sandbox bug in serve mode (and a safe workaround), how to build a real Stop button, and a notification gotcha. All written up with repro scripts in [`WHAT-WE-FOUND.md`](WHAT-WE-FOUND.md).
+Driving Muse through its SDK every day threw up a few hurdles: a Windows sandbox bug in serve mode (and a safe workaround), how to build a real Stop button, and a notification gotcha. All written up with repro scripts in [`WHAT-WE-FOUND.md`](WHAT-WE-FOUND.md).
 
 ## Free for everyone
 
