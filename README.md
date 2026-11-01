@@ -1,18 +1,32 @@
 # Meta Betta — we just made it play nice
 
-[![Install from the Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-install-blue)](https://marketplace.visualstudio.com/items?itemName=madazz01.meta-betta)
-
 **Coffee and Muse. New mornings without the restarts.** Start the day with a colleague, not a tool.
 
 A friendly workmate for Meta's Muse Code: a chat panel in VS Code, with a brain folder that remembers you and your project, so every session starts where you left off.
 
 ## Install
 
-1. Install [Muse Code](https://docs.meta.ai) and grab an API key.
-2. Download `meta-betta-0.1.0.vsix` from the Releases page.
-3. In VS Code: Extensions view (⇧⌘X) → `…` → Install from VSIX → pick the file.
+1. Download `meta-betta-0.1.0.vsix` from the latest [Release](https://github.com/madazz01/meta-betta/releases).
+2. In VS Code: Extensions view (Ctrl+Shift+X) → `…` → **Install from VSIX…** → pick the file.
+3. Open a project folder, click the **M** icon, and open the chat. The first run sets up Muse and your Meta API key right there in the panel.
 
-Honest notes: Windows is the platform we actually tested (Mac and Linux should work but we couldn't check); the first run walks you through setup and stores your API key in your machine's secret store.
+**Honest notes**
+
+- Tested on Windows 11. Mac and Linux should work, but we haven't checked them.
+- It uses your own Muse credits.
+- On Windows, Muse's sandbox doesn't work in serve mode yet, so Meta Betta runs with a safe workaround: Muse asks before running commands. **Approvals: Auto** skips the safe ones inside your folder. See [WHAT-WE-FOUND.md](WHAT-WE-FOUND.md).
+- Every reply's changes can be undone (↩ Undo), and files are backed up to `.backups/` before they're changed.
+- Your API key lives in VS Code's secret store, never in a file.
+- On Muse's contributor model, keep secrets out of the folder you open.
+- Found a problem? [Open an issue](https://github.com/madazz01/meta-betta/issues).
+
+**Built something with it?** Paste this into your README:
+
+```
+[![Built with Meta Betta](https://img.shields.io/badge/built%20with-Meta%20Betta-1f9d55)](https://github.com/madazz01/meta-betta)
+```
+
+[![Built with Meta Betta](https://img.shields.io/badge/built%20with-Meta%20Betta-1f9d55)](https://github.com/madazz01/meta-betta)
 
 Built for the Meta Global AI Developer Hackathon (27 Oct – 4 Nov 2026). Everything in this repo was written during the hackathon.
 
