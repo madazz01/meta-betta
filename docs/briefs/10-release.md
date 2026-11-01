@@ -1,9 +1,9 @@
 # 10 — Release: a clean .vsix anyone can install
 
-Read `AGENTS.md` first. 08g must be done. Start on a clean tree.
+Read `AGENTS.md` first. 08h must be done. Start on a clean tree.
 
 ## Why
-Bryan is releasing Meta Betta to the other hackathon entrants (Fri 30 / Sat 31 Oct). People will
+Bryan is releasing Meta Betta to the other hackathon entrants (Tue 3 Nov). People will
 install it from a GitHub Release. It has to install cleanly, look finished, and never lose
 anyone's work.
 
