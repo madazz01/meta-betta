@@ -1,10 +1,29 @@
 {
   "name": "meta-betta",
   "displayName": "Meta Betta",
-  "description": "The dev's assistant: a friendly chat panel on top of Muse Code, with a memory of you and your project.",
+  "description": "A friendly VS Code workmate for Muse Code that remembers you and your project.",
   "publisher": "madazz01",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/madazz01/meta-betta"
+  },
+  "homepage": "https://github.com/madazz01/meta-betta",
+  "bugs": {
+    "url": "https://github.com/madazz01/meta-betta/issues"
+  },
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "theme": "dark"
+  },
+  "keywords": [
+    "muse",
+    "meta",
+    "ai",
+    "chat",
+    "memory"
+  ],
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -135,7 +154,8 @@
   "scripts": {
     "build": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "test": "tsc -p . && node --test \"out/test/**/*.test.js\""
+    "test": "tsc -p . && node --test \"out/test/**/*.test.js\"",
+    "package": "node -e \"require('fs').mkdirSync('../dist',{recursive:true})\" && npx @vscode/vsce@3.2.1 package -o ../dist/meta-betta-0.1.0.vsix"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

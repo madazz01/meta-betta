@@ -1,0 +1,10 @@
+# Keep the .vsix lean: compiled JS and media ship, sources and tests don't.
+src/**
+out/test/**
+**/*.map
+tsconfig.json
+**/*.test.*
+.vscode/**
+media/render-icon.js
+node_modules/@types/**
+node_modules/typescript/**

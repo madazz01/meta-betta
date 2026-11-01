@@ -1,8 +1,18 @@
 # Meta Betta — we just made it play nice
 
+[![Install from the Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-install-blue)](https://marketplace.visualstudio.com/items?itemName=madazz01.meta-betta)
+
 **Coffee and Muse. New mornings without the restarts.** Start the day with a colleague, not a tool.
 
 A friendly workmate for Meta's Muse Code: a chat panel in VS Code, with a brain folder that remembers you and your project, so every session starts where you left off.
+
+## Install
+
+1. Install [Muse Code](https://docs.meta.ai) and grab an API key.
+2. Download `meta-betta-0.1.0.vsix` from the Releases page.
+3. In VS Code: Extensions view (⇧⌘X) → `…` → Install from VSIX → pick the file.
+
+Honest notes: Windows is the platform we actually tested (Mac and Linux should work but we couldn't check); the first run walks you through setup and stores your API key in your machine's secret store.
 
 Built for the Meta Global AI Developer Hackathon (27 Oct – 4 Nov 2026). Everything in this repo was written during the hackathon.
 
