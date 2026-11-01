@@ -20,6 +20,7 @@ import type {
   ItemDeltaParams,
   Notification,
 } from "@muse-code/sdk/dist/src/msp.js";
+import { buildTurnInput, type PasteImage } from "../lib/paste.js";
 import { formatSaveTime, stripBackgroundPrefix } from "../brain/brain.js";
 import { isSavePrompt } from "../brain/prompts.js";
 import { MAIN_TAB_UID } from "../lib/chatTabs.js";
@@ -111,6 +112,7 @@ export type MuseHostEvent =
   | { type: "approvalDone"; id: string }
   | { type: "notice"; text: string; copy?: string; kind: "info" | "error" }
   | { type: "turn"; state: "started" | "done"; finalId?: string; line?: string; replay?: boolean }
+  | { type: "draft"; text: string }
   | { type: "usage"; usage: SessionUsageTotals }
   | { type: "goal"; goal: GoalInfo | null }
   | { type: "model"; modelId: string }
@@ -175,10 +177,25 @@ export interface HostClient {
   close(): Promise<void>;
 }
 
+/** One text part of a turn's input. */
+export interface TurnInputText {
+  type: "text";
+  text: string;
+}
+
+/** One picture part of a turn's input (width goes with height, always). */
+export interface TurnInputImage {
+  type: "image";
+  mediaType: string;
+  base64Data: string;
+  width: number;
+  height: number;
+}
+
 /** The slice of the SDK session MuseHost drives (real or fake). */
 export interface HostSession {
   readonly sessionId: string;
-  sendUserTurn(options: { input: { type: "text"; text: string }[] }): Promise<HostTurn>;
+  sendUserTurn(options: { input: (TurnInputText | TurnInputImage)[] }): Promise<HostTurn>;
   onApproval(handler: ApprovalHandler): void;
   onApprovalError(handler: ApprovalFailureHandler): void;
   readonly fold: { readonly items: { list(): readonly FoldedItem[] } };
@@ -285,7 +302,12 @@ export class MuseHost {
 
   public constructor(private readonly options: MuseHostOptions) {}
 
-  public async send(text: string, workspaceRoot: string): Promise<void> {
+  /**
+   * Run the message as a turn. Text-only callers pass nothing more; a
+   * message with pictures passes them, plus the user's own words so a
+   * rejected picture can go back in the box.
+   */
+  public async send(text: string, workspaceRoot: string, images: PasteImage[] = [], draftText?: string): Promise<void> {
     // First, before any event: a lost race throws with nothing emitted, so
     // the controller can queue the message behind the running turn.
     const owner = this.turnOwner();
@@ -295,7 +317,7 @@ export class MuseHost {
     }
     this.log(`lock: ${owner} acquired`);
     try {
-      await this.runTurn(text, workspaceRoot);
+      await this.runTurn(text, workspaceRoot, images, draftText);
     } finally {
       if (lockHolder() === owner) {
         releaseTurn(owner);
@@ -309,7 +331,7 @@ export class MuseHost {
     return this.options.turnOwner ?? MAIN_TAB_UID;
   }
 
-  private async runTurn(text: string, workspaceRoot: string): Promise<void> {
+  private async runTurn(text: string, workspaceRoot: string, images: PasteImage[], draftText?: string): Promise<void> {
     this.turnGen += 1;
     const state = newTurnState(this.turnGen);
     this.turnActive = true;
@@ -337,9 +359,19 @@ export class MuseHost {
     this.emit({ type: "status", text: "Muse is thinking…" });
     let turn: HostTurn;
     try {
-      turn = await session.sendUserTurn({ input: [{ type: "text", text }] });
+      turn = await session.sendUserTurn({ input: buildTurnInput(text, images) });
     } catch (error) {
       this.markDead();
+      if (images.length > 0) {
+        // The picture never reached Muse: say so plainly and put the user's
+        // own words (not the background-augmented prompt) back in the box.
+        this.emit({ type: "draft", text: draftText ?? text });
+        this.finishTurn(state.gen, {
+          kind: "error",
+          text: `Muse couldn't take that picture: ${shortReason(error)}.`,
+        });
+        return;
+      }
       this.finishTurn(state.gen, {
         kind: "error",
         text: `Something went wrong: ${shortReason(error)}. Want me to try again?`,

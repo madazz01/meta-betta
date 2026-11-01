@@ -1,5 +1,7 @@
 // Pure chat logic: no VS Code imports, so it can be unit tested with node --test.
 
+import { cleanPasteImages, type PasteImage } from "./paste.js";
+
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
@@ -34,6 +36,30 @@ export function parseSendMessage(value: unknown): string | undefined {
   }
   const trimmed = text.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Validate a "send" message that may carry pasted pictures. Returns the
+ * trimmed text (which may be empty when pictures ride along) plus the clean
+ * pictures, or undefined when the message isn't sendable.
+ */
+export function parseSendWithImages(value: unknown): { text: string; images: PasteImage[] } | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const { type, text, images } = value as { type?: unknown; text?: unknown; images?: unknown };
+  if (type !== "send" || typeof text !== "string") {
+    return undefined;
+  }
+  const trimmed = text.trim();
+  const clean = images === undefined ? [] : cleanPasteImages(images);
+  if (clean === undefined) {
+    return undefined;
+  }
+  if (trimmed === "" && clean.length === 0) {
+    return undefined;
+  }
+  return { text: trimmed, images: clean };
 }
 
 export interface NudgeAnswer {

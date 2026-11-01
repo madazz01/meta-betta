@@ -17,6 +17,8 @@ export function decideSession(savedId: string | undefined, resumeSucceeded: bool
 export interface TranscriptEntry {
   role: "user" | "assistant" | "undo" | "nudge" | "tool" | "thinking";
   text: string;
+  /** Pasted picture names (user entries only); a replay shows 🖼 per name. */
+  attachments?: string[];
   /** Undo button or nudge card id (undo/nudge entries only). */
   id?: string;
   /** Message time in ms (user/assistant only); a resumed chat shows real times. */
@@ -40,17 +42,46 @@ export interface TranscriptEventView {
   answer?: string;
   group?: string;
   failed?: boolean;
+  attachments?: string[];
+}
+
+/**
+ * Pasted picture names off a user event (at most four); anything else —
+ * other roles, missing or messy lists — keeps none.
+ */
+function userAttachments(role: string, value: { attachments?: unknown }): { attachments: string[] } | Record<string, never> {
+  if (role !== "user" || !Array.isArray(value.attachments)) {
+    return {};
+  }
+  const kept = value.attachments
+    .filter((name): name is string => typeof name === "string" && name !== "")
+    .slice(0, 4);
+  return kept.length > 0 ? { attachments: kept } : {};
+}
+
+/** True when the event carries pasted picture names. */
+function hasAttachments(event: TranscriptEventView): boolean {
+  return Array.isArray(event.attachments) && event.attachments.length > 0;
 }
 
 /** The last messages, Undo buttons and nudge answers, bounded for storage. */
 export function buildTranscript(events: readonly TranscriptEventView[]): TranscriptEntry[] {
   const kept: TranscriptEntry[] = [];
   for (const event of events) {
-    if ((event.type === "user" || event.type === "assistant") && event.text) {
+    if (event.type === "user" && event.text === "" && hasAttachments(event)) {
+      // Pictures with no words: no text to slice, but the names replay.
+      kept.push({
+        role: "user",
+        text: "",
+        ...(typeof event.at === "number" && Number.isFinite(event.at) ? { at: event.at } : {}),
+        ...userAttachments(event.type, event),
+      });
+    } else if ((event.type === "user" || event.type === "assistant") && event.text) {
       kept.push({
         role: event.type,
         text: event.text.slice(0, TEXT_LIMIT),
         ...(typeof event.at === "number" && Number.isFinite(event.at) ? { at: event.at } : {}),
+        ...userAttachments(event.type, event),
       });
     } else if (event.type === "undo" && event.id) {
       kept.push({ role: "undo", text: "", id: event.id });
@@ -86,6 +117,7 @@ export function cleanTranscript(value: unknown): TranscriptEntry[] {
           role: entry.role,
           text: entry.text.slice(0, TEXT_LIMIT),
           ...(typeof entry.at === "number" && Number.isFinite(entry.at) ? { at: entry.at } : {}),
+          ...userAttachments(entry.role, entry),
         });
       }
     }
@@ -124,11 +156,20 @@ const FORK_LIMIT = 100;
 export function buildForkTranscript(events: readonly TranscriptEventView[]): TranscriptEntry[] {
   const kept: TranscriptEntry[] = [];
   for (const event of events) {
-    if ((event.type === "user" || event.type === "assistant") && event.text) {
+    if (event.type === "user" && event.text === "" && hasAttachments(event)) {
+      // Pictures with no words: no text to slice, but the names replay.
+      kept.push({
+        role: "user",
+        text: "",
+        ...(typeof event.at === "number" && Number.isFinite(event.at) ? { at: event.at } : {}),
+        ...userAttachments(event.type, event),
+      });
+    } else if ((event.type === "user" || event.type === "assistant") && event.text) {
       kept.push({
         role: event.type,
         text: event.text.slice(0, TEXT_LIMIT),
         ...(typeof event.at === "number" && Number.isFinite(event.at) ? { at: event.at } : {}),
+        ...userAttachments(event.type, event),
       });
     } else if ((event.type === "tool" || event.type === "thinking") && event.text) {
       kept.push({
@@ -192,6 +233,8 @@ export interface ChatUserMessage {
   text: string;
   at?: number;
   time?: string;
+  /** Pasted picture names; a replay without the bytes shows 🖼 per name. */
+  attachments?: string[];
 }
 
 /** A chat reply: live ones are stamped at creation, replays keep theirs. */

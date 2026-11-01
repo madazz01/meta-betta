@@ -23,6 +23,7 @@
   const pillsEl = document.getElementById("pills");
   const popupEl = document.getElementById("popup");
   const composerWrapEl = document.getElementById("composer-wrap");
+  const chipsEl = document.getElementById("chips");
 
   // A reply shows its time only after a long gap in the conversation.
   const LONG_GAP_MS = 30 * 60 * 1000;
@@ -55,6 +56,16 @@
   let logSummary = null;
   let logContent = null;
   let logNow = null;
+  // Pasted pictures waiting to send: at most four, already shrunk.
+  const PASTE_MAX_IMAGES = 4;
+  const PASTE_LONG_EDGE = 1600;
+  // A PNG bigger than this goes out as JPEG instead (big photos).
+  const PASTE_JPEG_AFTER = 1024 * 1024;
+  // This session's copies, name → thumbnail, for rows we already sent.
+  const seenImages = new Map();
+  const SEEN_IMAGE_CAP = 40;
+  let pasteSeq = 0;
+  let pendingClips = [];
   let slashList = [];
   let slashOpen = false;
   let slashIndex = 0;
@@ -371,7 +382,62 @@
     return fallback.innerHTML;
   }
 
-  function addUserMessage(text, time) {
+  function formatPasteSize(bytes) {
+    if (bytes < 1024) {
+      return `${bytes}B`;
+    }
+    if (bytes < 1024 * 1024) {
+      return `${Math.round(bytes / 1024)}K`;
+    }
+    return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+  }
+
+  // Shrink to fit the long edge, keeping the shape. Never enlarges.
+  function shrinkDims(width, height) {
+    if (Math.max(width, height) <= PASTE_LONG_EDGE) {
+      return { width, height };
+    }
+    const scale = PASTE_LONG_EDGE / Math.max(width, height);
+    return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+  }
+
+  function rememberImage(name, dataUrl) {
+    seenImages.set(name, dataUrl);
+    while (seenImages.size > SEEN_IMAGE_CAP) {
+      seenImages.delete(seenImages.keys().next().value);
+    }
+  }
+
+  // One thumbnail per sent picture (from this session's copy), or a muted
+  // "🖼 image" where the bytes are gone (reloaded or forked chat).
+  function addAttachmentStrip(box, attachments) {
+    const names = Array.isArray(attachments) ? attachments.filter((name) => typeof name === "string" && name) : [];
+    if (names.length === 0) {
+      return;
+    }
+    const strip = document.createElement("div");
+    strip.className = "attach-strip";
+    for (const name of names.slice(0, PASTE_MAX_IMAGES)) {
+      const dataUrl = seenImages.get(name);
+      if (typeof dataUrl === "string" && dataUrl) {
+        const thumb = document.createElement("img");
+        thumb.className = "attach-thumb";
+        thumb.src = dataUrl;
+        thumb.alt = name;
+        thumb.title = name;
+        strip.appendChild(thumb);
+      } else {
+        const fallback = document.createElement("span");
+        fallback.className = "img-fallback";
+        fallback.title = name;
+        fallback.textContent = "🖼 image";
+        strip.appendChild(fallback);
+      }
+    }
+    box.appendChild(strip);
+  }
+
+  function addUserMessage(text, time, attachments) {
     hideEmptyState();
     closeTurn();
     if (typeof time === "string" && time) {
@@ -383,21 +449,32 @@
     lastStampAt = Date.now();
     const box = document.createElement("div");
     box.className = "user-msg";
-    box.textContent = text;
+    addAttachmentStrip(box, attachments);
+    const words = document.createElement("div");
+    words.className = "user-text";
+    words.textContent = text;
+    box.appendChild(words);
     messagesEl.appendChild(box);
     scrollToBottom();
   }
 
   // A message typed while Muse works: muted, with ✕ to drop it and Send now
   // to steer it into the running turn. It becomes a real bubble when sent.
-  function addQueued(id, text) {
+  function addQueued(id, text, attachments) {
     hideEmptyState();
     dropQueued(id);
     const row = document.createElement("div");
     row.className = "queued-row";
     const label = document.createElement("span");
     label.className = "queued-text";
-    label.textContent = `Queued: ${text}`;
+    const names = Array.isArray(attachments) ? attachments.filter((name) => typeof name === "string" && name) : [];
+    label.textContent = text ? `Queued: ${text}` : `Queued: ${names.length} picture${names.length === 1 ? "" : "s"}`;
+    if (names.length > 0 && text) {
+      const pics = document.createElement("span");
+      pics.className = "queued-pics";
+      pics.textContent = ` (+${names.length} 🖼)`;
+      label.appendChild(pics);
+    }
     const sendNow = document.createElement("button");
     sendNow.type = "button";
     sendNow.className = "queued-send";
@@ -430,6 +507,157 @@
       row.remove();
       queuedEls.delete(id);
     }
+  }
+
+  function attachNote(text) {
+    vscode.postMessage({ type: "attachNote", text });
+  }
+
+  // Strict at paste time: only PNG and JPEG pass. Anything else gets the
+  // plain error, never a silent conversion.
+  function pictureTypeOf(file) {
+    if (file.type === "image/png" || file.type === "image/jpeg") {
+      return file.type;
+    }
+    if (!file.type && /\.(png|jpe?g)$/i.test(file.name || "")) {
+      return /\.png$/i.test(file.name) ? "image/png" : "image/jpeg";
+    }
+    return undefined;
+  }
+
+  function imageFileOf(file) {
+    if (file.type && file.type.indexOf("image/") === 0) {
+      return true;
+    }
+    return /\.(png|jpe?g|gif|webp|bmp|avif|svg)$/i.test(file.name || "");
+  }
+
+  function renderChips() {
+    chipsEl.replaceChildren();
+    chipsEl.hidden = pendingClips.length === 0;
+    for (const clip of pendingClips) {
+      const chip = document.createElement("div");
+      chip.className = "clip-chip";
+      const thumb = document.createElement("img");
+      thumb.className = "clip-thumb";
+      thumb.src = clip.dataUrl;
+      thumb.alt = clip.name;
+      chip.appendChild(thumb);
+      const meta = document.createElement("span");
+      meta.className = "clip-meta";
+      meta.textContent = `${clip.name} ${clip.sizeLabel}`;
+      chip.appendChild(meta);
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "clip-drop";
+      drop.textContent = "✕";
+      drop.title = `Remove ${clip.name}`;
+      drop.setAttribute("aria-label", `Remove ${clip.name}`);
+      drop.addEventListener("click", () => {
+        pendingClips = pendingClips.filter((kept) => kept.id !== clip.id);
+        renderChips();
+        input.focus();
+      });
+      chip.appendChild(drop);
+      chipsEl.appendChild(chip);
+    }
+  }
+
+  function readAsDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("unreadable"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function canvasBlob(canvas, type, quality) {
+    return new Promise((resolve) => {
+      canvas.toBlob((blob) => resolve(blob), type, quality);
+    });
+  }
+
+  // A pasted or dropped picture becomes a chip: shrunk to 1600px on the
+  // long side, PNG — or JPEG for big photos. Removing the chip (✕) takes
+  // it back out of the message.
+  async function addPictureFile(file, name) {
+    if (pendingClips.length >= PASTE_MAX_IMAGES) {
+      attachNote("I can only take 4 pictures per message — the rest were left out.");
+      return;
+    }
+    const sourceType = pictureTypeOf(file);
+    if (!sourceType) {
+      attachNote("Sorry, I can only use PNG or JPEG pictures.");
+      return;
+    }
+    let bitmap = null;
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch {
+      bitmap = null;
+    }
+    if (!bitmap) {
+      attachNote("Sorry, I couldn't read that picture.");
+      return;
+    }
+    const target = shrinkDims(bitmap.width, bitmap.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = target.width;
+    canvas.height = target.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      attachNote("Sorry, I couldn't read that picture.");
+      return;
+    }
+    ctx.drawImage(bitmap, 0, 0, target.width, target.height);
+    if (bitmap.close) {
+      bitmap.close();
+    }
+    let blob = await canvasBlob(canvas, "image/png");
+    let mediaType = "image/png";
+    let ext = "png";
+    if (blob && blob.size > PASTE_JPEG_AFTER) {
+      const photo = await canvasBlob(canvas, "image/jpeg", 0.92);
+      if (photo) {
+        blob = photo;
+        mediaType = "image/jpeg";
+        ext = "jpg";
+      }
+    }
+    if (!blob) {
+      attachNote("Sorry, I couldn't read that picture.");
+      return;
+    }
+    let dataUrl = "";
+    try {
+      dataUrl = await readAsDataUrl(blob);
+    } catch {
+      attachNote("Sorry, I couldn't read that picture.");
+      return;
+    }
+    pasteSeq += 1;
+    const base = typeof name === "string" && name ? name.replace(/\.[a-z0-9]+$/i, "") : `pasted-${pasteSeq}`;
+    let clipName = typeof name === "string" && name ? `${base}.${ext}` : `pasted-${pasteSeq}.${ext}`;
+    const taken = new Set(pendingClips.map((clip) => clip.name));
+    if (taken.has(clipName)) {
+      let n = 2;
+      while (taken.has(`${base}-${n}.${ext}`)) {
+        n += 1;
+      }
+      clipName = `${base}-${n}.${ext}`;
+    }
+    const from = typeof file.size === "number" ? file.size : blob.size;
+    pendingClips.push({
+      id: `clip-${pasteSeq}`,
+      name: clipName,
+      dataUrl,
+      mediaType,
+      width: target.width,
+      height: target.height,
+      sizeLabel: from > blob.size ? `${formatPasteSize(from)} → ${formatPasteSize(blob.size)}` : formatPasteSize(blob.size),
+    });
+    renderChips();
   }
 
   function upsertAssistant(id, text, time) {
@@ -1531,14 +1759,101 @@
       return;
     }
     const text = input.value.trim();
-    if (!text) {
+    const clips = pendingClips;
+    if (!text && clips.length === 0) {
       return;
     }
+    // The rows we already sent keep their thumbnails from this copy.
+    for (const clip of clips) {
+      rememberImage(clip.name, clip.dataUrl);
+    }
+    pendingClips = [];
+    renderChips();
     input.value = "";
     setStatus("");
     closeSlashMenu();
     jumpToBottom();
-    vscode.postMessage({ type: "send", text });
+    if (clips.length === 0) {
+      vscode.postMessage({ type: "send", text });
+      return;
+    }
+    vscode.postMessage({
+      type: "send",
+      text,
+      images: clips.map((clip) => ({
+        name: clip.name,
+        mediaType: clip.mediaType,
+        base64Data: clip.dataUrl.split(",", 2)[1] || "",
+        width: clip.width,
+        height: clip.height,
+      })),
+    });
+  });
+
+  function insertAtCursor(text) {
+    const start = typeof input.selectionStart === "number" ? input.selectionStart : input.value.length;
+    const end = typeof input.selectionEnd === "number" ? input.selectionEnd : input.value.length;
+    input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
+    const at = start + text.length;
+    input.focus();
+    input.setSelectionRange(at, at);
+  }
+
+  // Files pasted from Explorer, or Shift+dropped on the panel: pictures
+  // become chips here; anything else goes to the extension for a mention.
+  function takeFiles(files) {
+    const paths = [];
+    for (const file of files) {
+      if (imageFileOf(file)) {
+        void addPictureFile(file, file.name);
+      } else if (file.path) {
+        paths.push(file.path);
+      } else {
+        attachNote(`I couldn't read ${file.name || "that file"} — try Shift+drop instead.`);
+      }
+    }
+    if (paths.length > 0) {
+      vscode.postMessage({ type: "dropFiles", paths });
+    }
+  }
+
+  input.addEventListener("paste", (event) => {
+    const data = event.clipboardData;
+    if (!data) {
+      return;
+    }
+    const items = Array.from(data.items || []);
+    const pictures = items.filter((item) => item.kind === "file" && item.type.indexOf("image/") === 0);
+    if (pictures.length > 0) {
+      event.preventDefault();
+      for (const item of pictures) {
+        const file = item.getAsFile();
+        if (file) {
+          void addPictureFile(file);
+        }
+      }
+      return;
+    }
+    const files = Array.from(data.files || []);
+    if (files.length > 0) {
+      event.preventDefault();
+      takeFiles(files);
+    }
+  });
+
+  document.addEventListener("dragover", (event) => {
+    if (event.dataTransfer && Array.from(event.dataTransfer.types || []).includes("Files")) {
+      event.preventDefault();
+    }
+  });
+
+  document.addEventListener("drop", (event) => {
+    const files = event.dataTransfer ? Array.from(event.dataTransfer.files || []) : [];
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    takeFiles(files);
   });
 
   input.addEventListener("input", () => {
@@ -1618,7 +1933,18 @@
     switch (message.type) {
       case "user":
         if (typeof message.text === "string") {
-          addUserMessage(message.text, message.time);
+          addUserMessage(message.text, message.time, message.attachments);
+        }
+        break;
+      case "insertText":
+        if (typeof message.text === "string" && message.text) {
+          insertAtCursor(message.text);
+        }
+        break;
+      case "draft":
+        if (typeof message.text === "string" && input.value.trim() === "") {
+          input.value = message.text;
+          input.focus();
         }
         break;
       case "assistant":
@@ -1815,7 +2141,7 @@
         break;
       case "queued":
         if (typeof message.id === "string" && typeof message.text === "string") {
-          addQueued(message.id, message.text);
+          addQueued(message.id, message.text, message.attachments);
         }
         break;
       case "queueDrop":

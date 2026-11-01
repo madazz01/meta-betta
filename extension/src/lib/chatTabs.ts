@@ -207,6 +207,14 @@ export interface QueuedMessage {
   id: string;
   text: string;
   recorded: boolean;
+  /** Pasted picture names waiting with the message; unset when there are none. */
+  attachments?: string[];
+}
+
+/** Picture names to keep on the queued message; none when the list is empty. */
+function takeAttachments(attachments: string[]): { attachments: string[] } | Record<string, never> {
+  const kept = attachments.filter((name) => typeof name === "string" && name !== "");
+  return kept.length > 0 ? { attachments: [...kept] } : {};
 }
 
 /** Typed messages waiting for the lock, oldest first. */
@@ -221,24 +229,24 @@ export class MessageQueue {
    * full. `recorded` marks a lost lock race: its bubble is already showing,
    * so the panel shows no extra row for it.
    */
-  public push(text: string, recorded = false): string | undefined {
+  public push(text: string, recorded = false, attachments: string[] = []): string | undefined {
     if (this.items.length >= this.limit) {
       return undefined;
     }
     this.seq += 1;
     const id = `q${this.seq}`;
-    this.items.push({ id, text, recorded });
+    this.items.push({ id, text, recorded, ...takeAttachments(attachments) });
     return id;
   }
 
   /** Queue a message at the front (a steer that missed its turn); undefined when full. */
-  public unshift(text: string, recorded = false): string | undefined {
+  public unshift(text: string, recorded = false, attachments: string[] = []): string | undefined {
     if (this.items.length >= this.limit) {
       return undefined;
     }
     this.seq += 1;
     const id = `q${this.seq}`;
-    this.items.unshift({ id, text, recorded });
+    this.items.unshift({ id, text, recorded, ...takeAttachments(attachments) });
     return id;
   }
 

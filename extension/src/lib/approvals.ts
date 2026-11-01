@@ -378,7 +378,7 @@ function backupCopy(argv: string[], workspaceRoot: string): BackupAction | undef
 }
 
 /** True when the candidate (workspace-relative or absolute) lands in root. */
-function insideDir(workspaceRoot: string, root: string, candidate: string): boolean {
+export function insideDir(workspaceRoot: string, root: string, candidate: string): boolean {
   const base = win32.resolve(root).toLowerCase();
   const target = win32.resolve(workspaceRoot, candidate).toLowerCase();
   return target === base || target.startsWith(`${base}${win32.sep}`);

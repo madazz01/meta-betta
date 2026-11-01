@@ -37,7 +37,16 @@ import {
   shortcutDispatch,
   swapShortcutSlot,
 } from "./commands/shortcuts.js";
-import { parseCardButton, parseCardInput, parseNudgeAnswer, parseSendMessage } from "./lib/chat.js";
+import { parseCardButton, parseCardInput, parseNudgeAnswer, parseSendWithImages } from "./lib/chat.js";
+import {
+  imageAttachmentNames,
+  pasteFileFits,
+  PASTED_DIR,
+  PASTED_GITIGNORE,
+  uniquePastedName,
+  type PasteImage,
+} from "./lib/paste.js";
+import { insideDir } from "./lib/approvals.js";
 import { formatWorkLog } from "./lib/items.js";
 import type { StepGroup } from "./lib/items.js";
 import { parseFileLink } from "./lib/links.js";
@@ -328,6 +337,8 @@ export class ChatController {
   private readonly queue = new MessageQueue();
   private retryTimer: ReturnType<typeof setInterval> | undefined;
   private flushing = false;
+  /** Pasted pictures waiting with queued messages, keyed by queue row id. */
+  private readonly pendingImages = new Map<string, PasteImage[]>();
 
   public constructor(
     private readonly extensionUri: vscode.Uri,
@@ -368,7 +379,7 @@ export class ChatController {
     }
     for (const item of this.queue.list()) {
       if (!item.recorded) {
-        sink.post({ type: "queued", id: item.id, text: item.text });
+        sink.post({ type: "queued", id: item.id, text: item.text, ...sentAttachments(item.attachments ?? []) });
       }
     }
     sink.post({ type: "turn", state: this.running ? "started" : "done" });
@@ -456,7 +467,10 @@ export class ChatController {
     }
   }
 
-  public async send(text: string): Promise<void> {
+  public async send(text: string, images: PasteImage[] = []): Promise<void> {
+    if (text === "" && images.length === 0) {
+      return;
+    }
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
       this.broadcast({ type: "noFolder" });
@@ -469,6 +483,14 @@ export class ChatController {
     if (slash) {
       this.recordAndBroadcast({ type: "user", text, at: Date.now() });
       this.storeSet(this.tabKey(LAST_MESSAGE_KEY), Date.now());
+      if (images.length > 0) {
+        // The command ran; the pictures went nowhere. Say so, plainly.
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "info",
+          text: "That went out without the pictures — send them with a message to show them to Muse.",
+        });
+      }
       await this.dispatchSlash(slash.name, slash.args);
       return;
     }
@@ -519,15 +541,20 @@ export class ChatController {
     if (lockHolder() !== undefined) {
       // Queued behind the running turn: the bubble records when it sends, so
       // a waiting message never skews the undo anchors or shows twice.
-      this.enqueueMessage(text);
+      this.enqueueMessage(text, false, images);
       return;
     }
     // Recorded only once the turn will actually run: a failed send never
     // reaches the server, and a ghost user message would skew the undo
     // anchors on resume.
-    this.recordAndBroadcast({ type: "user", text, at: Date.now() });
+    this.recordAndBroadcast({
+      type: "user",
+      text,
+      at: Date.now(),
+      ...sentAttachments(imageAttachmentNames(images)),
+    });
     this.storeSet(this.tabKey(LAST_MESSAGE_KEY), Date.now());
-    await this.sendNow(folder, text);
+    await this.sendNow(folder, text, images);
     if (this.welcomeAfterTurn) {
       // The greeting's turn is done and the lock is free: ask the deferred name.
       const pending = this.welcomeAfterTurn;
@@ -606,7 +633,7 @@ export class ChatController {
    * Run the turn now. A lost lock race re-queues instead of failing; the
    * message is recorded already, so only the turn is deferred.
    */
-  private async sendNow(folder: vscode.WorkspaceFolder, text: string): Promise<void> {
+  private async sendNow(folder: vscode.WorkspaceFolder, text: string, images: PasteImage[] = []): Promise<void> {
     let host: MuseHost;
     try {
       host = await this.ensureHost(folder);
@@ -630,11 +657,16 @@ export class ChatController {
     }
     const prompt = await this.withBackground(folder, text);
     try {
-      await host.send(peek ? `${prompt}\n\n${peek.block}` : prompt, folder.uri.fsPath);
+      await host.send(
+        peek ? `${prompt}\n\n${peek.block}` : prompt,
+        folder.uri.fsPath,
+        images,
+        images.length > 0 ? text : undefined,
+      );
     } catch (error) {
       if (error instanceof TurnBusyError) {
         // Lost the lock race after recording: the bubble stays, no extra row.
-        this.enqueueMessage(text, true);
+        this.enqueueMessage(text, true, images);
         return;
       }
       throw error;
@@ -666,18 +698,117 @@ export class ChatController {
    * `recorded` marks a lost lock race: its bubble is already showing, so no
    * extra row goes up for it.
    */
-  private enqueueMessage(text: string, recorded = false): void {
-    const id = this.queue.push(text, recorded);
+  private enqueueMessage(text: string, recorded = false, images: PasteImage[] = []): void {
+    const id = this.queue.push(text, recorded, imageAttachmentNames(images));
     if (id === undefined) {
       this.showBusy();
       return;
     }
+    if (images.length > 0) {
+      this.pendingImages.set(id, images);
+    }
     this.log(queueQueuedNote(this.tabHost.uid, this.queue.size, lockHolder()));
     if (!recorded) {
-      this.broadcast({ type: "queued", id, text });
+      this.broadcast({ type: "queued", id, text, ...sentAttachments(imageAttachmentNames(images)) });
     }
     this.showBusy();
     this.ensureRetry();
+  }
+
+  /** Take (and forget) the pictures waiting with a queued message. */
+  private takeImages(id: string): PasteImage[] {
+    const images = this.pendingImages.get(id);
+    this.pendingImages.delete(id);
+    return images ?? [];
+  }
+
+  /** A webview-side refusal (wrong picture type, too many): say so in chat. */
+  public attachNote(text: string): void {
+    this.recordAndBroadcast({ type: "notice", kind: "error", text });
+  }
+
+  /**
+   * Dropped or pasted-in files. Workspace files are mentioned where they
+   * are; outside ones are copied under .meta-betta/pasted/ first. Mentions
+   * land at the cursor; every refusal says so in plain words.
+   */
+  public async resolveDrop(paths: string[]): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      this.broadcast({ type: "noFolder" });
+      return;
+    }
+    const root = folder.uri.fsPath;
+    const mentions: string[] = [];
+    const seen = new Set<string>();
+    const mention = (text: string): void => {
+      if (!seen.has(text)) {
+        seen.add(text);
+        mentions.push(text);
+      }
+    };
+    for (const raw of paths) {
+      if (typeof raw !== "string" || raw.trim() === "") {
+        continue;
+      }
+      const target = raw.trim();
+      const base = path.basename(target) || target;
+      let stat: { isDirectory(): boolean; size: number } | undefined;
+      try {
+        stat = await fs.promises.stat(target);
+      } catch {
+        stat = undefined;
+      }
+      if (!stat) {
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "error",
+          text: `I couldn't find ${base} — it may have been moved or deleted.`,
+        });
+        continue;
+      }
+      if (stat.isDirectory()) {
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "error",
+          text: "Sorry, I can only use single files, not folders.",
+        });
+        continue;
+      }
+      if (!pasteFileFits(stat.size)) {
+        this.recordAndBroadcast({
+          type: "notice",
+          kind: "error",
+          text: "That file's too big to paste (20 MB max).",
+        });
+        continue;
+      }
+      if (insideDir(root, root, target)) {
+        const rel = path.relative(root, path.resolve(root, target)).split(path.sep).join("/");
+        mention(`@${rel}`);
+        continue;
+      }
+      try {
+        const dir = path.join(root, PASTED_DIR);
+        await fs.promises.mkdir(dir, { recursive: true });
+        const taken = await fs.promises.readdir(dir).catch(() => [] as string[]);
+        const name = uniquePastedName(taken, base);
+        await fs.promises.copyFile(target, path.join(dir, name));
+        const isRepo = await fs.promises
+          .stat(path.join(root, ".git"))
+          .then(() => true)
+          .catch(() => false);
+        if (isRepo) {
+          await ensureGitignoreEntry(root, PASTED_GITIGNORE);
+        }
+        mention(`@${PASTED_DIR}/${name}`);
+      } catch {
+        this.recordAndBroadcast({ type: "notice", kind: "error", text: `I couldn't read ${base}.` });
+      }
+    }
+    if (mentions.length > 0) {
+      this.broadcast({ type: "insertText", text: `${mentions.join(" ")} ` });
+    }
   }
 
   /** Drop waiting drafts, saying so when there were any. */
@@ -698,6 +829,7 @@ export class ChatController {
     if (this.queue.remove(id) === undefined) {
       return;
     }
+    this.pendingImages.delete(id);
     this.broadcast({ type: "queueDrop", id });
     this.settleRetry();
   }
@@ -709,6 +841,24 @@ export class ChatController {
       return;
     }
     this.broadcast({ type: "queueDrop", id });
+    const images = this.takeImages(id);
+    if (images.length > 0) {
+      // Steer can't carry pictures: the message (pictures and all) goes
+      // first with the next turn instead. Quietly, per the brief.
+      const front = this.queue.unshift(taken.text, taken.recorded, taken.attachments ?? []);
+      if (front === undefined) {
+        // Unreachable: removing just freed the slot.
+        this.settleRetry();
+        return;
+      }
+      this.pendingImages.set(front, images);
+      if (!taken.recorded) {
+        this.broadcast({ type: "queued", id: front, text: taken.text, ...sentAttachments(taken.attachments ?? []) });
+      }
+      this.settleRetry();
+      this.ensureRetry();
+      return;
+    }
     const folder = vscode.workspace.workspaceFolders?.[0];
     let host: MuseHost | undefined;
     try {
@@ -769,10 +919,15 @@ export class ChatController {
         if (!next.recorded) {
           // The muted row becomes the real bubble as its turn starts.
           this.broadcast({ type: "queueDrop", id: next.id });
-          this.recordAndBroadcast({ type: "user", text: next.text, at: Date.now() });
+          this.recordAndBroadcast({
+            type: "user",
+            text: next.text,
+            at: Date.now(),
+            ...sentAttachments(next.attachments ?? []),
+          });
           this.storeSet(this.tabKey(LAST_MESSAGE_KEY), Date.now());
         }
-        await this.sendNow(folder, next.text);
+        await this.sendNow(folder, next.text, this.takeImages(next.id));
       } else if (
         next === undefined &&
         this.pendingSave === "full" &&
@@ -2301,7 +2456,12 @@ export class ChatController {
                 });
               } else if (entry.role === "user") {
                 closeSpan();
-                this.recordAndBroadcast({ type: "user", text: entry.text, at: entry.at });
+                this.recordAndBroadcast({
+                  type: "user",
+                  text: entry.text,
+                  at: entry.at,
+                  ...sentAttachments(entry.attachments ?? []),
+                });
                 this.recordAndBroadcast({ type: "turn", state: "started", replay: true });
                 span = { userAt: entry.at, reads: 0, commands: 0, edits: 0 };
               } else {
@@ -2884,6 +3044,11 @@ export class ChatController {
       // No persistent display; /model lists fresh.
       return;
     }
+    if (event.type === "draft") {
+      // A rejected picture: the words go back in the box, unrecorded.
+      this.broadcast({ type: "draft", text: event.text });
+      return;
+    }
     const save = this.saveRun;
     if (save) {
       this.onSaveEvent(event, save);
@@ -3220,14 +3385,31 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     void controller.dispatchSlash("fork", "");
     return;
   }
-  const text = parseSendMessage(message);
-  if (text !== undefined) {
-    void controller.send(text);
+  if (message.type === "dropFiles" && Array.isArray(message.paths)) {
+    const paths = message.paths.filter((entry): entry is string => typeof entry === "string");
+    if (paths.length > 0) {
+      void controller.resolveDrop(paths);
+    }
+    return;
+  }
+  if (message.type === "attachNote" && typeof message.text === "string" && message.text.trim() !== "") {
+    controller.attachNote(message.text.trim());
+    return;
+  }
+  const send = parseSendWithImages(message);
+  if (send !== undefined) {
+    void controller.send(send.text, send.images);
   }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** Picture names riding on a user or queued message, when there are any. */
+function sentAttachments(names: readonly string[]): { attachments: string[] } | Record<string, never> {
+  const kept = names.filter((name) => name !== "");
+  return kept.length > 0 ? { attachments: [...kept] } : {};
 }
 
 /** "1 file" or "3 files". */
