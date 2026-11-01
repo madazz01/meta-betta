@@ -17,7 +17,7 @@ Bryan's Friday testing turned up three rough edges. After this brief, we package
    user is already at the bottom (within about 60px). If they've scrolled up, leave the view
    where it is and show a small grey **"↓ New"** pill above the input box. Clicking the pill,
    or scrolling back down by hand, hides it and starts following again. Sending a message
-   always jumps to the bottom. Keep the pill calm: grey, one word, no count.
+   keeps the view where it is too (Bryan: you often type while reading back). Keep the pill calm: grey, one word, no count.
 3. **Throwaway redirects must really be throwaway.** In `lib/approvals.ts`, `THROWAWAY_NULL`
    uses `\$null\b`, so `>$null.txt` counts as "output thrown away". It's really a write to a
    file called `$null.txt`. The same goes for `| Out-Null.ps1`-style tails and
