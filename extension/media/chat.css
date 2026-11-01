@@ -766,6 +766,33 @@ body.vscode-light .pill {
   margin: 0 auto;
 }
 
+/* The "new output below" pill: small, grey, one word. */
+#new-pill {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 999px;
+  padding: 2px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  background-color: var(--vscode-input-background);
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.15));
+  white-space: nowrap;
+}
+
+#new-pill[hidden] {
+  display: none;
+}
+
+#new-pill:hover {
+  color: var(--vscode-foreground);
+}
+
 #picker {
   position: absolute;
   left: 0;

@@ -166,10 +166,15 @@ const WRITE_WORDS = ["out-file", "set-content", "add-content", "tee-object", "--
 /** `2>`, `>`, `*>` waiting for a `$null` (the spaced form: `2> $null`). */
 const THROWAWAY_PAIRS = new Set(["2>", ">", "*>"]);
 
-/** `2>$null` and friends, spaced or not, any case: output thrown away. */
-const THROWAWAY_NULL = /2>\s*\$null\b|\*>\s*\$null\b|>\s*\$null\b|2>&1|\|\s*out-null\b/gi;
+/**
+ * `2>$null` and friends, spaced or not, any case: output thrown away. Each
+ * match must end the command or hit whitespace, `;`, `|`, `)` or `&` — so
+ * `>$null.txt` (a real file) and `| Out-Null.ps1` survive.
+ */
+const THROWAWAY_NULL =
+  /2>\s*\$null(?=$|[\s;|)&])|\*>\s*\$null(?=$|[\s;|)&])|>\s*\$null(?=$|[\s;|)&])|2>&1(?=$|[\s;|)&])|\|\s*out-null(?=$|[\s;|)&])/gi;
 /** `2>/dev/null`, exactly: stderr thrown away on Mac and Linux. */
-const THROWAWAY_DEV_NULL = /2>\/dev\/null/g;
+const THROWAWAY_DEV_NULL = /2>\/dev\/null(?=$|[\s;|)&])/g;
 
 /**
  * The command without throwaway redirects (`2>$null`, `>$null`, `*>$null`,
@@ -210,9 +215,13 @@ export function stripThrowawayArgv(argv: string[]): string[] {
   return clean;
 }
 
-/** A bare `Out-Null` stage: a sink that discards its input, worth no row. */
+/**
+ * A bare `Out-Null` stage: a sink that discards its input, worth no row.
+ * Compares the raw word, not commandName: a script file called
+ * `Out-Null.ps1` can do anything, so it still asks.
+ */
 export function isSinkStage(argv: string[]): boolean {
-  return argv.length === 1 && commandName(argv[0] ?? "") === "out-null";
+  return argv.length === 1 && (argv[0] ?? "").toLowerCase() === "out-null";
 }
 
 /**

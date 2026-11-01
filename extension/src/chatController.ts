@@ -69,6 +69,7 @@ import {
 import {
   appendEntry,
   backupBrain,
+  brainCommitOffer,
   buildBackgroundBlock,
   catchUpGreeting,
   cleanLiveLabels,
@@ -1738,29 +1739,42 @@ export class ChatController {
       if (error || stdout.trim() !== "true") {
         return;
       }
-      void vscode.window.showInformationMessage("Also commit the brain?", "Commit brain").then((choice) => {
-        if (choice !== "Commit brain") {
+      // An ignored brain (like this repo's own) never gets a commit prompt.
+      execFile("git", ["check-ignore", "-q", "brain"], { cwd: root }, (ignoreError) => {
+        const offer = brainCommitOffer(ignoreError);
+        if (offer === "quiet") {
           return;
         }
-        execFile("git", ["add", "brain"], { cwd: root }, (addError) => {
-          if (addError) {
-            this.broadcast({ type: "notice", kind: "error", text: "Couldn't commit the brain." });
-            return;
-          }
-          const date = todayLogFile().slice("log/".length, -".md".length);
-          execFile("git", ["commit", "-m", `Save my day ${date}`], { cwd: root }, (commitError) => {
-            if (commitError) {
-              const alreadyDone = String(commitError.message).includes("nothing to commit");
-              this.broadcast({
-                type: "notice",
-                kind: alreadyDone ? "info" : "error",
-                text: alreadyDone ? "Already committed — nothing new." : "Couldn't commit the brain.",
-              });
+        if (offer === "error") {
+          this.broadcast({ type: "notice", kind: "error", text: "Couldn't commit the brain." });
+          return;
+        }
+        void vscode.window
+          .showInformationMessage("Also commit the brain?", "Commit brain")
+          .then((choice) => {
+            if (choice !== "Commit brain") {
               return;
             }
-            this.broadcast({ type: "notice", kind: "info", text: "Brain committed." });
+            execFile("git", ["add", "brain"], { cwd: root }, (addError) => {
+              if (addError) {
+                this.broadcast({ type: "notice", kind: "error", text: "Couldn't commit the brain." });
+                return;
+              }
+              const date = todayLogFile().slice("log/".length, -".md".length);
+              execFile("git", ["commit", "-m", `Save my day ${date}`], { cwd: root }, (commitError) => {
+                if (commitError) {
+                  const alreadyDone = String(commitError.message).includes("nothing to commit");
+                  this.broadcast({
+                    type: "notice",
+                    kind: alreadyDone ? "info" : "error",
+                    text: alreadyDone ? "Already committed — nothing new." : "Couldn't commit the brain.",
+                  });
+                  return;
+                }
+                this.broadcast({ type: "notice", kind: "info", text: "Brain committed." });
+              });
+            });
           });
-        });
       });
     });
   }

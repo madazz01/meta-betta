@@ -72,7 +72,42 @@
   let stepsList = null;
   let stepsSummary = null;
 
+  // New output follows the view only while the user is already at the
+  // bottom; scrolled up, they get the "↓ New" pill instead of a yank.
+  const followScroll = window.MetaBettaScroll || null;
+  const newPill = document.getElementById("new-pill");
+
+  function distanceFromBottom() {
+    if (!followScroll) {
+      return 0;
+    }
+    return followScroll.distanceFromBottom(
+      messagesEl.scrollHeight,
+      messagesEl.scrollTop,
+      messagesEl.clientHeight,
+    );
+  }
+
+  function hideNewPill() {
+    if (newPill) {
+      newPill.hidden = true;
+    }
+  }
+
   function scrollToBottom() {
+    if (followScroll && !followScroll.shouldFollow(distanceFromBottom(), false)) {
+      if (newPill) {
+        newPill.hidden = false;
+      }
+      return;
+    }
+    hideNewPill();
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // Sending a message always jumps back to the bottom.
+  function jumpToBottom() {
+    hideNewPill();
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
@@ -1502,6 +1537,7 @@
     input.value = "";
     setStatus("");
     closeSlashMenu();
+    jumpToBottom();
     vscode.postMessage({ type: "send", text });
   });
 
@@ -1529,6 +1565,17 @@
   });
 
   messagesEl.addEventListener("scroll", closeCtxMenu);
+
+  // Scrolled back down by hand: hide the pill, follow again.
+  messagesEl.addEventListener("scroll", () => {
+    if (followScroll && followScroll.shouldFollow(distanceFromBottom(), false)) {
+      hideNewPill();
+    }
+  });
+
+  if (newPill) {
+    newPill.addEventListener("click", jumpToBottom);
+  }
 
   input.addEventListener("keydown", (event) => {
     if (slashOpen && (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === "Escape")) {

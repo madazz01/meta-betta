@@ -7,6 +7,7 @@ import {
   appendEntry,
   backupBrain,
   brainCardInputs,
+  brainCommitOffer,
   buildBackgroundBlock,
   buildBrainCards,
   catchUpGreeting,
@@ -259,6 +260,16 @@ describe("session labels", () => {
   it("formats the label with or without a topic", () => {
     assert.equal(formatSessionLabel("7f3a", "login page"), "Session 7f3a · login page");
     assert.equal(formatSessionLabel("7f3a", ""), "Session 7f3a");
+  });
+});
+
+describe("brainCommitOffer", () => {
+  it("stays quiet for an ignored brain, prompts for a tracked one", () => {
+    assert.equal(brainCommitOffer(null), "quiet");
+    assert.equal(brainCommitOffer(undefined), "quiet");
+    assert.equal(brainCommitOffer({ code: 1 }), "prompt");
+    assert.equal(brainCommitOffer({ code: 128 }), "error");
+    assert.equal(brainCommitOffer({ code: "ENOENT" }), "error");
   });
 });
 

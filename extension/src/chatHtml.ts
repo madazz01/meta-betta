@@ -17,12 +17,14 @@ export function buildChatHtml(
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "chat.css"));
   const markdownUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "markdown.js"));
   const stepsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "stepGroup.js"));
+  const scrollUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "scrollFollow.js"));
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "chat.js"));
   return html
     .replaceAll("__CSP_SOURCE__", webview.cspSource)
     .replaceAll("__STYLE_URI__", styleUri.toString())
     .replaceAll("__MARKDOWN_URI__", markdownUri.toString())
     .replaceAll("__STEPS_URI__", stepsUri.toString())
+    .replaceAll("__SCROLL_URI__", scrollUri.toString())
     .replaceAll("__SCRIPT_URI__", scriptUri.toString())
     .replaceAll("__NONCE__", createNonce());
 }

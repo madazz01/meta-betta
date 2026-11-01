@@ -169,6 +169,16 @@ describe("commandHasWrite", () => {
     assert.equal(commandHasWrite("Get-Content x > out.txt"), true);
     assert.equal(commandHasWrite("Get-ChildItem 2>$null > out.txt"), true);
   });
+
+  it("keeps writes to $null.txt-style files, not throwaways", () => {
+    assert.equal(commandHasWrite("Write-Output hi >$null.txt"), true);
+    assert.equal(commandHasWrite("Get-ChildItem 2>$null.log"), true);
+    assert.equal(commandHasWrite("ls 2>/dev/null.txt"), true);
+    assert.equal(stripThrowawayCommand("Write-Output hi >$null; Write-Output done").includes(">"), false);
+    assert.equal(stripThrowawayCommand("x *>$null)").includes(">"), false);
+    assert.equal(stripThrowawayCommand("node build.js 2>&1 | Out-Null").includes(">"), false);
+    assert.equal(stripThrowawayCommand("Get-ChildItem brain | Out-Null").includes("|"), false);
+  });
 });
 
 describe("stripThrowaway", () => {
@@ -193,6 +203,18 @@ describe("stripThrowaway", () => {
       "f.txt",
     ]);
     assert.equal(stripThrowawayCommand("Get-Content $HOME\\x 2>$null").includes("$HOME"), true);
+  });
+
+  it("leaves $null.txt-style tails alone on both sides", () => {
+    assert.deepEqual(stripThrowawayArgv(["echo", "2>$null.txt"]), ["echo", "2>$null.txt"]);
+    assert.deepEqual(stripThrowawayArgv(["echo", "2>", "$null.log"]), ["echo", "2>", "$null.log"]);
+    assert.deepEqual(stripThrowawayArgv(["echo", "2>/dev/null.txt"]), ["echo", "2>/dev/null.txt"]);
+    assert.deepEqual(stripThrowawayArgv(["Get-ChildItem", "|", "Out-Null.ps1"]), [
+      "Get-ChildItem",
+      "|",
+      "Out-Null.ps1",
+    ]);
+    assert.equal(isSinkStage(["Out-Null.ps1"]), false);
   });
 
   it("spots bare Out-Null sink stages", () => {
@@ -565,6 +587,10 @@ describe("autoAllowStage", () => {
     assert.equal(autoAllowStage(["Get-Content", "x", ">", "out.txt"], root), false);
     assert.equal(autoAllowStage(["Get-Content", "$HOME\\x", "2>$null"], root), false);
     assert.equal(autoAllowStage(["node", "$file", "2>$null"], root), false);
+    assert.equal(
+      autoAllowStage(["Write-Output", "hi", ">$null.txt"], root, "Write-Output hi >$null.txt"),
+      false,
+    );
   });
 });
 

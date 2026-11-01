@@ -463,6 +463,24 @@ export function formatSessionLabel(id: string, topic: string): string {
   return topic ? `Session ${id} · ${topic}` : `Session ${id}`;
 }
 
+/** What the save flow does about the brain commit prompt after probing git. */
+export type BrainCommitOffer = "prompt" | "quiet" | "error";
+
+/**
+ * After `rev-parse` says this is a repo: `check-ignore -q brain` exiting 0
+ * (no error) means brain/ is ignored → stay quiet, no prompt and no error.
+ * Exit 1 means it is tracked → prompt as before. Any fatal git error →
+ * show "Couldn't commit the brain." instead.
+ */
+export function brainCommitOffer(
+  checkIgnoreError: { code?: unknown } | null | undefined,
+): BrainCommitOffer {
+  if (!checkIgnoreError) {
+    return "quiet";
+  }
+  return checkIgnoreError.code === 1 ? "prompt" : "error";
+}
+
 export interface BrainFiles {
   me?: string;
   project?: string;
