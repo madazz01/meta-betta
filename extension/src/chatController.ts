@@ -44,6 +44,7 @@ import {
   PASTED_DIR,
   PASTED_GITIGNORE,
   uniquePastedName,
+  fileMention,
   type PasteImage,
 } from "./lib/paste.js";
 import { insideDir } from "./lib/approvals.js";
@@ -785,7 +786,7 @@ export class ChatController {
       }
       if (insideDir(root, root, target)) {
         const rel = path.relative(root, path.resolve(root, target)).split(path.sep).join("/");
-        mention(`@${rel}`);
+        mention(fileMention(rel));
         continue;
       }
       try {
@@ -801,7 +802,7 @@ export class ChatController {
         if (isRepo) {
           await ensureGitignoreEntry(root, PASTED_GITIGNORE);
         }
-        mention(`@${PASTED_DIR}/${name}`);
+        mention(fileMention(`${PASTED_DIR}/${name}`));
       } catch {
         this.recordAndBroadcast({ type: "notice", kind: "error", text: `I couldn't read ${base}.` });
       }

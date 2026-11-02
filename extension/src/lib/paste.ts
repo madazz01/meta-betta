@@ -1,6 +1,14 @@
 // Pure paste helpers (pictures and files into the chat): no VS Code imports,
 // so they can be unit tested with node --test.
 
+/**
+ * The `@` mention for a workspace-relative path. Mentions are plain text the
+ * model reads, so a path with spaces is quoted: `@"docs/My Notes.txt"`.
+ */
+export function fileMention(relPath: string): string {
+  return /\s/.test(relPath) ? `@"${relPath}"` : `@${relPath}`;
+}
+
 /** Pictures per message; the panel caps chips at this. */
 export const PASTE_MAX_IMAGES = 4;
 /** Longest edge, in px, of a picture sent to Muse. Bigger ones shrink. */
@@ -129,6 +137,7 @@ function splitName(name: string): { stem: string; ext: string } {
  * "shot-3.png" when taken (including clashes from an earlier save).
  */
 export function uniquePastedName(taken: Iterable<string>, name: string): string {
+  name = name.replace(/\s+/g, "-");
   const used = new Set(taken);
   if (!used.has(name)) {
     return name;

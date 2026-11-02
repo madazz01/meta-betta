@@ -10,6 +10,7 @@ import {
   resizeDims,
   SEE_IMAGE_TEXT,
   uniquePastedName,
+  fileMention,
   type PasteImage,
 } from "../lib/paste.js";
 import { ensureGitignoreEntry, type BrainFs } from "../brain/brain.js";
@@ -195,5 +196,16 @@ describe("paste limits", () => {
   it("chip sizes read plainly", () => {
     assert.equal(formatPasteSize(812 * 1024), "812K");
     assert.equal(formatPasteSize(84 * 1024), "84K");
+  });
+});
+
+describe("names with spaces", () => {
+  it("outside copies swap spaces for dashes", () => {
+    assert.equal(uniquePastedName([], "My Notes.txt"), "My-Notes.txt");
+    assert.equal(uniquePastedName(["My-Notes.txt"], "My  Notes.txt"), "My-Notes-2.txt");
+  });
+  it("mentions quote a path with spaces, and only then", () => {
+    assert.equal(fileMention("docs/My Notes.txt"), '@"docs/My Notes.txt"');
+    assert.equal(fileMention("src/app.ts"), "@src/app.ts");
   });
 });
