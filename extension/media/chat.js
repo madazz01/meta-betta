@@ -1801,6 +1801,35 @@
 
   // Files pasted from Explorer, or Shift+dropped on the panel: pictures
   // become chips here; anything else goes to the extension for a mention.
+  async function sendFileBytes(file) {
+    const name = file.name || "pasted-file";
+    if (file.size > 20 * 1024 * 1024) {
+      attachNote("That file's too big to paste (20 MB max).");
+      return;
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      vscode.postMessage({ type: "pasteFileBytes", name, base64Data: dataUrl.split(",", 2)[1] || "" });
+    } catch {
+      attachNote(`Sorry, I couldn't read ${name}. Folders can't be pasted, only single files.`);
+    }
+  }
+
+  // Drags from VS Code's own Explorer carry file: URIs; use them so
+  // workspace files are mentioned in place rather than copied.
+  function droppedUris(dataTransfer) {
+    const raw = dataTransfer.getData("application/vnd.code.uri-list") || dataTransfer.getData("text/uri-list") || "";
+    return raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("file:"));
+  }
+
   function takeFiles(files) {
     const paths = [];
     for (const file of files) {
@@ -1809,7 +1838,8 @@
       } else if (file.path) {
         paths.push(file.path);
       } else {
-        attachNote(`I couldn't read ${file.name || "that file"} — try Shift+drop instead.`);
+        // VS Code hides real paths from webviews: send the bytes instead.
+        void sendFileBytes(file);
       }
     }
     if (paths.length > 0) {
@@ -1842,13 +1872,23 @@
   });
 
   document.addEventListener("dragover", (event) => {
-    if (event.dataTransfer && Array.from(event.dataTransfer.types || []).includes("Files")) {
+    const types = event.dataTransfer ? Array.from(event.dataTransfer.types || []) : [];
+    if (types.includes("Files") || types.includes("application/vnd.code.uri-list") || types.includes("text/uri-list")) {
       event.preventDefault();
     }
   });
 
   document.addEventListener("drop", (event) => {
-    const files = event.dataTransfer ? Array.from(event.dataTransfer.files || []) : [];
+    if (!event.dataTransfer) {
+      return;
+    }
+    const uris = droppedUris(event.dataTransfer);
+    if (uris.length > 0) {
+      event.preventDefault();
+      vscode.postMessage({ type: "dropFiles", paths: uris });
+      return;
+    }
+    const files = Array.from(event.dataTransfer.files || []);
     if (files.length === 0) {
       return;
     }

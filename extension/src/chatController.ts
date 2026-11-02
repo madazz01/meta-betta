@@ -752,7 +752,8 @@ export class ChatController {
       if (typeof raw !== "string" || raw.trim() === "") {
         continue;
       }
-      const target = raw.trim();
+      // Drags from VS Code's own Explorer arrive as file: URIs.
+      const target = raw.trim().startsWith("file:") ? vscode.Uri.parse(raw.trim()).fsPath : raw.trim();
       const base = path.basename(target) || target;
       let stat: { isDirectory(): boolean; size: number } | undefined;
       try {
@@ -809,6 +810,42 @@ export class ChatController {
     }
     if (mentions.length > 0) {
       this.broadcast({ type: "insertText", text: `${mentions.join(" ")} ` });
+    }
+  }
+
+  /**
+   * A file the panel could read but not locate (VS Code hides real paths
+   * from webviews): save its bytes under .meta-betta/pasted/ and mention it.
+   */
+  public async pasteFileBytes(name: string, base64Data: string): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      this.broadcast({ type: "noFolder" });
+      return;
+    }
+    const root = folder.uri.fsPath;
+    const base = path.basename(name.replace(/\\/g, "/")) || "pasted-file";
+    const bytes = Buffer.from(base64Data, "base64");
+    if (!pasteFileFits(bytes.length)) {
+      this.recordAndBroadcast({ type: "notice", kind: "error", text: "That file's too big to paste (20 MB max)." });
+      return;
+    }
+    try {
+      const dir = path.join(root, PASTED_DIR);
+      await fs.promises.mkdir(dir, { recursive: true });
+      const taken = await fs.promises.readdir(dir).catch(() => [] as string[]);
+      const saved = uniquePastedName(taken, base);
+      await fs.promises.writeFile(path.join(dir, saved), bytes, { flag: "wx" });
+      const isRepo = await fs.promises
+        .stat(path.join(root, ".git"))
+        .then(() => true)
+        .catch(() => false);
+      if (isRepo) {
+        await ensureGitignoreEntry(root, PASTED_GITIGNORE);
+      }
+      this.broadcast({ type: "insertText", text: `${fileMention(`${PASTED_DIR}/${saved}`)} ` });
+    } catch {
+      this.recordAndBroadcast({ type: "notice", kind: "error", text: `I couldn't save ${base}.` });
     }
   }
 
@@ -3391,6 +3428,10 @@ export function routeViewMessage(controller: ChatController, message: unknown): 
     if (paths.length > 0) {
       void controller.resolveDrop(paths);
     }
+    return;
+  }
+  if (message.type === "pasteFileBytes" && typeof message.name === "string" && typeof message.base64Data === "string") {
+    void controller.pasteFileBytes(message.name, message.base64Data);
     return;
   }
   if (message.type === "attachNote" && typeof message.text === "string" && message.text.trim() !== "") {
