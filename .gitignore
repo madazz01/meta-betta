@@ -8,3 +8,4 @@ dist/
 # Meta Betta working files when building Meta Betta with itself (personal notes stay local)
 brain/
 .backups/
+.meta-betta/
