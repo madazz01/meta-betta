@@ -8,7 +8,7 @@ A friendly workmate for Meta's Muse Code: a chat panel in VS Code, with a brain 
 
 1. Download `meta-betta-0.1.0.vsix` from the latest [Release](https://github.com/madazz01/meta-betta/releases).
 2. In VS Code: Extensions view (Ctrl+Shift+X) → `…` → **Install from VSIX…** → pick the file.
-3. Open a project folder, click the **M** icon, and open the chat. The first run sets up Muse and your Meta API key right there in the panel.
+3. Open a project folder, click the **M** icon on the left, then **New chat**. The first run sets up Muse and your Meta API key right there in the panel.
 
 **Honest notes**
 
