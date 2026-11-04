@@ -10,6 +10,51 @@ A friendly workmate for Meta's Muse Code: a chat panel in VS Code, with a brain 
 2. In VS Code: Extensions view (Ctrl+Shift+X) → `…` → **Install from VSIX…** → pick the file.
 3. Open a project folder, click the **M** icon on the left, then **New chat**. The first run sets up Muse and your Meta API key right there in the panel.
 
+## Your first day
+
+**What it is:** a chat with Muse that remembers you. You talk, Muse does the work in your folder, and tomorrow it picks up where you left off.
+
+![Day one: the welcome chat asks your name. Usage, chats and the brain are in the sidebar.](docs/images/first-day.png)
+
+1. **Just talk to it.** Type what you want in plain words and hit **Send**. "Make me a simple web page for my shop" is fine. Under each reply there's a one-line summary of what it did. Click it to see every step. Didn't like a change? Hit **↩ Undo that** under the reply.
+
+   ![Two small jobs: each reply has its work line, the new file shows up in Explorer, and Undo that is right there.](docs/images/work-log.png)
+2. **It gets to know you.** On day one it asks a few easy questions about you and what you're building. That goes in a `brain/` folder in your project, in plain text files you can open and read.
+
+   ![The welcome chat filling in the brain: your name lands in About you, the job in Project.](docs/images/welcome.png)
+3. **Hit Save before you finish.** It writes up what you did, what's left and anything that worked, into the brain. It also saves on its own every so often, so you won't lose much if you forget.
+4. **Come back tomorrow.** Open the folder, click **M**, and it starts with "here's where we're up to". No explaining it all again.
+
+<!-- screenshot: docs/images/morning.png (the morning pick-up) -->
+
+**The buttons**
+
+| Button | What it does |
+|---|---|
+| **Save** | Saves your day into the brain ("Saved ✓ see you tomorrow") |
+| **↩ Undo** | Puts back whatever the last reply changed. Each reply also has its own **Undo that** |
+| **New** | A new chat in a new tab |
+| **Auto ▾** | How much it asks first. **Ask**: you OK every step. **Auto**: safe stuff in your folder just goes, anything else asks. **All**: no asking (careful) |
+| **Normal ▾** | How hard Muse thinks. Deep is slower and uses more credits |
+| **Goal · Side · Fork · Usage** | Shortcuts. Goal: pin the job for this chat. Side: a quick question that doesn't derail the main chat. Fork: try another way in a new tab. Usage: your credits |
+
+<img src="docs/images/approvals.png" alt="The approvals menu: Ask, Auto, All" width="420">
+
+**Make the shortcuts yours.** Right-click any shortcut to swap it for another: recap, tidy up a long chat, switch model, see running tasks, skills, plugins, export the chat, go back to an earlier chat, or save my day. Type **/** to use any of them without a button.
+
+<img src="docs/images/shortcuts.png" alt="Right-click a shortcut to swap it: the full list" width="280">
+
+**Side** opens a little box for an off-topic question. The answer comes back without messing up the main chat.
+
+<img src="docs/images/side-question.png" alt="The Side question box" width="420">
+
+**Handy to know**
+
+- Paste a screenshot straight into the box (Win+Shift+S, then Ctrl+V). Hold **Shift** while you drop a file in.
+- Keep typing while it works. Your message waits in a queue, or you can send it straight into the running job.
+- **Stop it** really stops it.
+- The sidebar shows your brain, past chats and how many credits you've used.
+
 **Honest notes**
 
 - Tested on Windows 11. Mac and Linux should work, but we haven't checked them.
